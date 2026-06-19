@@ -273,6 +273,8 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "stage_bottom": None,
         "stage_light": None,
         "stage_hint": None,
+        "ranking_panel": None,
+        "ranking_ranks": {},
     }
 
     if not skin_folder:
@@ -323,6 +325,11 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     skin["stage_bottom"] = read_image(find_image(folder, images.get("StageBottom")) or find_image(folder, "mania-stage-bottom"))
     skin["stage_light"] = read_image(find_image(folder, images.get("StageLight")) or find_image(folder, "mania-stage-light"))
     skin["stage_hint"] = read_image(find_image(folder, images.get("StageHint")) or find_image(folder, "mania-stage-hint"))
+    skin["ranking_panel"] = read_image(find_image(folder, "ranking-panel"))
+    skin["ranking_ranks"] = {
+        rank: read_image(find_image(folder, f"ranking-{rank.lower()}"))
+        for rank in ("X", "XH", "S", "SH", "A", "B", "C", "D")
+    }
 
     for value in ("0", "50", "100", "200", "300", "300g"):
         image_name = images.get(f"Hit{value}")

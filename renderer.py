@@ -558,6 +558,7 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
 
 def init_worker(ctx):
     global CTX
+    cv2.setNumThreads(1)
     CTX = ctx
 
 
@@ -630,7 +631,7 @@ def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
         x1, y1, x2, y2 = bbox
         visible_cover = stage_bottom[y1:y2, x1:x2]
         aspect_height = int(play_width * visible_cover.shape[0] / max(1, visible_cover.shape[1]))
-        cover_h = max(1, min(aspect_height, int(48 * skin_scale)))
+        cover_h = max(1, min(aspect_height, int(84 * skin_scale)))
         paste_rgba(frame, visible_cover, play_x, 0, play_width, cover_h)
         return
 
@@ -772,15 +773,9 @@ def draw_key_bpms(frame, event_lanes, map_time, width, y):
         end_i = bisect_right(times, map_time)
         presses = sum(1 for pressed in states[start_i:end_i] if pressed)
         bpm = int(round(presses * 60000 / window_ms))
-        draw_ui_text(
-            frame,
-            f"K{lane + 1}: {bpm}",
-            (right_x, y),
-            0.44 * ui_scale,
-            (205, 205, 210),
-            1,
-            "right",
-        )
+        value_column_width = int(30 * ui_scale)
+        draw_ui_text(frame, f"K{lane + 1}:", (right_x - value_column_width, y), 0.44 * ui_scale, (205, 205, 210), 1, "right")
+        draw_ui_text(frame, str(bpm), (right_x, y), 0.44 * ui_scale, (205, 205, 210), 1, "right")
         y += int(20 * ui_scale)
 
     return y
@@ -789,7 +784,7 @@ def draw_key_bpms(frame, event_lanes, map_time, width, y):
 def draw_star_rating(frame, star_rating, height):
     text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
     ui_scale = overlay_scale(height)
-    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(24 * ui_scale)), 0.56 * ui_scale)
+    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(72 * ui_scale)), 0.56 * ui_scale)
 
 
 def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, y):
@@ -830,6 +825,164 @@ def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, 
     )
 
 
+def build_difficulty_profile(notes, start_time, end_time, sample_count=220):
+    sample_count = max(60, int(sample_count))
+    duration = max(1, end_time - start_time)
+    raw = np.zeros(sample_count, dtype=np.float32)
+    grouped = {}
+
+    for note in notes:
+        grouped.setdefault(note["time"], []).append(note)
+
+    previous_time = None
+
+    for note_time, chord in sorted(grouped.items()):
+        index = min(sample_count - 1, max(0, int((note_time - start_time) / duration * (sample_count - 1))))
+        interval = 500 if previous_time is None else max(35, note_time - previous_time)
+        speed = min(8.0, 500.0 / interval)
+        chord_weight = 1.0 + 0.55 * (len(chord) - 1)
+        ln_weight = 1.0 + 0.2 * sum(1 for note in chord if note.get("end_time") is not None)
+        raw[index] += speed * chord_weight * ln_weight
+        previous_time = note_time
+
+    kernel = np.array([0.08, 0.18, 0.34, 0.55, 1.0, 0.55, 0.34, 0.18, 0.08], dtype=np.float32)
+    smoothed = np.convolve(raw, kernel, mode="same")
+    ceiling = float(np.percentile(smoothed[smoothed > 0], 96)) if np.any(smoothed > 0) else 1.0
+    return np.clip(smoothed / max(ceiling, 0.001), 0.0, 1.0).tolist()
+
+
+def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width, height):
+    if not profile:
+        return
+
+    ui_scale = overlay_scale(height)
+    x1 = int(20 * ui_scale)
+    x2 = width - int(205 * ui_scale)
+    graph_h = max(20, int(40 * ui_scale))
+    y2 = height - int(14 * ui_scale)
+    y1 = y2 - graph_h
+
+    if x2 - x1 < 100:
+        return
+
+    xs = np.linspace(x1, x2, len(profile)).astype(np.int32)
+    ys = np.array([y2 - int(value * graph_h) for value in profile], dtype=np.int32)
+    points = np.column_stack((xs, ys))
+    progress = max(0.0, min(1.0, (map_time - start_time) / max(1, end_time - start_time)))
+    passed_i = min(len(points) - 1, max(0, int(progress * (len(points) - 1))))
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (x1, y1), (x2, y2), (18, 18, 21), -1)
+
+    if passed_i > 0:
+        passed_poly = np.vstack((points[:passed_i + 1], [points[passed_i, 0], y2], [x1, y2]))
+        cv2.fillPoly(overlay, [passed_poly], (35, 115, 55))
+
+    if passed_i < len(points) - 1:
+        future_poly = np.vstack(([points[passed_i, 0], y2], points[passed_i:], [x2, y2]))
+        cv2.fillPoly(overlay, [future_poly], (62, 62, 68))
+
+    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+
+    if passed_i > 0:
+        cv2.polylines(frame, [points[:passed_i + 1]], False, (70, 220, 100), max(1, int(2 * ui_scale)), cv2.LINE_AA)
+
+    if passed_i < len(points) - 1:
+        cv2.polylines(frame, [points[passed_i:]], False, (135, 135, 142), max(1, int(2 * ui_scale)), cv2.LINE_AA)
+
+    marker_x = int(x1 + (x2 - x1) * progress)
+    cv2.line(frame, (marker_x, y1), (marker_x, y2), (225, 225, 228), 1, cv2.LINE_AA)
+
+
+def replay_rank(score, mods_int=0):
+    if score >= 1_000_000:
+        rank = "X"
+    elif score >= 950_000:
+        rank = "S"
+    elif score >= 900_000:
+        rank = "A"
+    elif score >= 800_000:
+        rank = "B"
+    elif score >= 700_000:
+        rank = "C"
+    else:
+        rank = "D"
+
+    if rank in ("X", "S") and mods_int & (8 | 1024):
+        rank += "H"
+
+    return rank
+
+
+def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, pp, rank):
+    height, width = frame.shape[:2]
+    panel = skin.get("ranking_panel")
+
+    if panel is not None:
+        target_ratio = width / max(1, height)
+        crop_h = min(panel.shape[0], max(1, int(panel.shape[1] / target_ratio)))
+        panel = panel[:crop_h]
+        paste_rgba(frame, panel, 0, 0, width, height)
+    else:
+        frame[:] = (24, 27, 36)
+
+    sx = width / 1366
+    sy = height / 768
+    scale = max(0.55, min(sx, sy))
+    draw_ui_text(frame, title, (int(35 * sx), int(54 * sy)), 0.58 * scale, (240, 245, 250), 1)
+
+    rows = [
+        (("300g", counts.get("300g", 0)), ("300", counts.get("300", 0))),
+        (("200", counts.get("200", 0)), ("100", counts.get("100", 0))),
+        (("50", counts.get("50", 0)), ("Miss", counts.get("0", 0))),
+    ]
+    row_ys = (165, 255, 345)
+
+    for row_y, row in zip(row_ys, rows):
+        for x, (label, value) in zip((55, 315), row):
+            draw_ui_text(frame, label, (int(x * sx), int(row_y * sy)), 0.54 * scale, (185, 210, 235), 1)
+            draw_ui_text(frame, str(value), (int((x + 190) * sx), int(row_y * sy)), 0.72 * scale, (250, 250, 252), 1, "right")
+
+    draw_ui_text(frame, f"{max_combo}x", (int(165 * sx), int(438 * sy)), 0.68 * scale, (250, 250, 252), 1, "center")
+    draw_ui_text(frame, f"{accuracy:.2f}%", (int(420 * sx), int(438 * sy)), 0.68 * scale, (250, 250, 252), 1, "center")
+    draw_ui_text(frame, f"Score  {score:,}", (int(55 * sx), int(500 * sy)), 0.58 * scale, (235, 240, 245), 1)
+    pp_text = "pp  N/A" if pp is None else f"pp  {pp:.2f}"
+    draw_ui_text(frame, pp_text, (int(315 * sx), int(500 * sy)), 0.58 * scale, (235, 240, 245), 1)
+
+    rank_img = skin.get("ranking_ranks", {}).get(rank)
+
+    if rank_img is not None:
+        bbox = alpha_bbox(rank_img)
+
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            rank_img = rank_img[y1:y2, x1:x2]
+
+        source_h, source_w = rank_img.shape[:2]
+        max_w = int(360 * sx)
+        max_h = int(310 * sy)
+        rank_scale = min(max_w / max(1, source_w), max_h / max(1, source_h))
+        paste_rgba_centered_sized(
+            frame,
+            rank_img,
+            int(930 * sx),
+            int(265 * sy),
+            max(1, int(source_w * rank_scale)),
+            max(1, int(source_h * rank_scale)),
+        )
+    else:
+        draw_ui_text(frame, rank, (int(930 * sx), int(300 * sy)), 3.0 * scale, (245, 245, 250), 2, "center")
+
+
+def write_render_frame(output_dir, frame_id, frame):
+    out = Path(output_dir) / f"frame_{frame_id:07d}.jpg"
+    cv2.imwrite(
+        str(out),
+        frame,
+        [cv2.IMWRITE_JPEG_QUALITY, 98],
+    )
+
+
 def latest_judgement(judgements, lane, kind, time):
     for judgement in judgements:
         if judgement["lane"] == lane and judgement["kind"] == kind and judgement["time"] == time:
@@ -844,6 +997,8 @@ def frame_worker(frame_id):
     fps = CTX["fps"]
     start_map_time = CTX["start_map_time"]
     end_map_time = CTX["end_map_time"]
+    gameplay_end_time = CTX.get("gameplay_end_time", end_map_time)
+    results_start_time = CTX.get("results_start_time", end_map_time + 1)
     notes = CTX["notes"]
     keys = CTX["keys"]
     title = CTX["title"]
@@ -859,12 +1014,28 @@ def frame_worker(frame_id):
     note_times = CTX.get("note_times", [])
     judgement_lookup = CTX.get("judgement_lookup", {})
     star_rating = CTX.get("star_rating")
+    difficulty_profile = CTX.get("difficulty_profile", [])
 
     real_elapsed = int(frame_id * 1000 / fps)
     map_time = start_map_time + int(real_elapsed * speed_multiplier)
 
     frame = np.zeros((height, width, 3), dtype=np.uint8)
     frame[:] = (12, 12, 15)
+
+    if map_time >= results_start_time:
+        draw_results_screen(
+            frame,
+            skin,
+            title,
+            CTX.get("final_counts", {}),
+            CTX.get("final_accuracy", 100.0),
+            CTX.get("replay_max_combo", 0),
+            CTX.get("replay_score", 0),
+            CTX.get("final_pp"),
+            CTX.get("replay_rank", "D"),
+        )
+        write_render_frame(output_dir, frame_id, frame)
+        return frame_id
 
     cfg = skin["cfg"]
 
@@ -1070,6 +1241,15 @@ def frame_worker(frame_id):
         apply_motion_blur(frame, play_x - 16, top_y, play_width + 32, height, motion_blur)
 
     draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale)
+    draw_difficulty_graph(
+        frame,
+        difficulty_profile,
+        map_time,
+        start_map_time,
+        gameplay_end_time,
+        width,
+        height,
+    )
 
     line_colour = skin_colour_to_bgra(cfg["colours"].get("ColourColumnLine")) or (65, 55, 55, 255)
 
@@ -1107,33 +1287,32 @@ def frame_worker(frame_id):
         frame,
         map_time,
         start_map_time,
-        end_map_time,
+        gameplay_end_time,
         width,
         height,
         stats_y + int(8 * ui_scale),
     )
     draw_star_rating(frame, star_rating, height)
 
-    out = Path(output_dir) / f"frame_{frame_id:07d}.png"
-    cv2.imwrite(str(out), frame)
+    write_render_frame(output_dir, frame_id, frame)
 
     return frame_id
 
 
 def make_audio_args(speed_multiplier, nightcore_pitch):
     if speed_multiplier == 1.0:
-        return []
+        return ["-filter:a", "apad"]
 
     if nightcore_pitch and speed_multiplier == 1.5:
-        return ["-filter:a", "asetrate=44100*1.5,aresample=44100"]
+        return ["-filter:a", "asetrate=44100*1.5,aresample=44100,apad"]
 
     if speed_multiplier == 1.5:
-        return ["-filter:a", "atempo=1.5"]
+        return ["-filter:a", "atempo=1.5,apad"]
 
     if speed_multiplier == 0.75:
-        return ["-filter:a", "atempo=0.75"]
+        return ["-filter:a", "atempo=0.75,apad"]
 
-    return ["-filter:a", f"atempo={speed_multiplier}"]
+    return ["-filter:a", f"atempo={speed_multiplier},apad"]
 
 
 def ffmpeg_encoder_names():
@@ -1161,7 +1340,7 @@ def video_encode_commands(fps, frames_dir, silent_video):
     encoders = ffmpeg_encoder_names()
     input_args = [
         "-framerate", str(fps),
-        "-i", str(frames_dir / "frame_%07d.png"),
+        "-i", str(frames_dir / "frame_%07d.jpg"),
     ]
 
     device = vaapi_device()
@@ -1332,6 +1511,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
     fps = 60
 
     mod_settings = get_mod_settings(replay_file) if replay_file else {
+        "mods_int": 0,
         "speed_multiplier": 1.0,
         "mirror": False,
         "mods": "NM",
@@ -1383,7 +1563,15 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
     simulated_accuracy = judgements[-1]["accuracy"] if judgements else 100.0
 
     start_map_time = max(0, notes[0]["time"] - 2000)
-    end_map_time = notes[-1]["time"] + 3000
+    gameplay_end_time = max((note["end_time"] if note["end_time"] is not None else note["time"]) for note in notes)
+    results_start_time = gameplay_end_time + 1000
+    end_map_time = results_start_time + 4500
+    final_counts = judgement_counts(judgements)
+    final_pp = mania_pp_value(star_rating, final_counts)
+    replay_score = int(getattr(replay, "score", 0)) if replay else 0
+    replay_max_combo = int(getattr(replay, "max_combo", 0)) if replay else 0
+    rank = replay_rank(replay_score, mod_settings["mods_int"])
+    difficulty_profile = build_difficulty_profile(notes, start_map_time, gameplay_end_time)
 
     real_duration_ms = int((end_map_time - start_map_time) / speed_multiplier)
     total_frames = max(1, int(real_duration_ms / 1000 * fps))
@@ -1433,6 +1621,8 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "fps": fps,
         "start_map_time": start_map_time,
         "end_map_time": end_map_time,
+        "gameplay_end_time": gameplay_end_time,
+        "results_start_time": results_start_time,
         "notes": notes,
         "keys": beatmap.keys,
         "title": f"{beatmap.artist} - {beatmap.title} [{beatmap.version}] | {mod_settings['mods']}",
@@ -1449,6 +1639,13 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "judgement_lookup": judgement_lookup,
         "star_rating": star_rating,
         "replay_accuracy": replay_accuracy,
+        "final_accuracy": simulated_accuracy,
+        "final_counts": final_counts,
+        "final_pp": final_pp,
+        "replay_score": replay_score,
+        "replay_max_combo": replay_max_combo,
+        "replay_rank": rank,
+        "difficulty_profile": difficulty_profile,
     }
 
     write_debug_report(
