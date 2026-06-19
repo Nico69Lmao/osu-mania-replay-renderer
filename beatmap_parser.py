@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from hashlib import md5
 
 
 @dataclass
@@ -15,6 +16,7 @@ class Beatmap:
     version: str
     creator: str
     audio_file: str
+    md5_hash: str
     keys: int
     overall_difficulty: float
     mode: int
@@ -35,6 +37,9 @@ def parse_osu(path: str):
 
     with open(path, "r", encoding="utf-8", errors="ignore") as f:
         lines = f.readlines()
+
+    with open(path, "rb") as f:
+        md5_hash = md5(f.read()).hexdigest()
 
     for line in lines:
         line = line.strip()
@@ -93,6 +98,7 @@ def parse_osu(path: str):
         version=version,
         creator=creator,
         audio_file=audio_file,
+        md5_hash=md5_hash,
         keys=keys,
         overall_difficulty=overall_difficulty,
         mode=mode,

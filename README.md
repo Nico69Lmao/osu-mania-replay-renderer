@@ -15,6 +15,8 @@ Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr`
 - Accuracy dinamica basata su OD della mappa.
 - Counter per judgement: `300g`, `300`, `200`, `100`, `50`, `Miss`.
 - PP counter con formula ufficiale osu!mania quando e disponibile una star rating; altrimenti mostra `pp: N/A`.
+- Star rating letta dalla cache `osu!.db` quando disponibile, scegliendo la voce mania per i mod del replay.
+- Timeline in basso al video.
 - Supporto mod speed:
   - DT: video e audio a `1.5x`
   - NC: video a `1.5x`, audio con pitch alto tramite `asetrate`
@@ -66,11 +68,12 @@ Per ogni render viene scritto anche un file `.debug.json` accanto al video. Cont
 - OD e hit windows usate
 - scroll speed e travel time
 - encoder ffmpeg usato
+- star rating letta da `osu!.db`
 - primi judgement non perfetti
 
 ## Note sui PP
 
-La formula pp mania ufficiale richiede la star rating della mappa. La star rating non e contenuta nel file `.osu`; deve essere calcolata dal difficulty calculator o letta da una sorgente esterna affidabile. Per questo il renderer non inventa pp se manca la SR e mostra `pp: N/A`.
+La formula pp mania ufficiale richiede la star rating della mappa. La star rating non e contenuta nel file `.osu`; il renderer prova a leggerla da `osu!.db`, dove osu!stable cache-a le star ratings per ruleset e combinazione mod. Se non viene trovata, il renderer non inventa pp e mostra `pp: N/A`.
 
 Formula usata quando la SR e disponibile:
 

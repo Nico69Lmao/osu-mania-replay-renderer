@@ -14,6 +14,7 @@ from beatmap_parser import parse_osu
 from osu_finder import get_mod_settings, get_stable_mania_accuracy, get_replay
 from skin_loader import load_mania_skin
 from replay_parser import get_replay_events
+from osu_db_reader import read_mania_star_rating
 
 CTX = {}
 MANIA_MAX_TIME_RANGE_MS = 11485.0
@@ -643,6 +644,23 @@ def draw_pp_counter(frame, judgements, map_time, width, star_rating):
     cv2.putText(frame, text, (width - 185, 365), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2)
 
 
+def draw_star_rating(frame, star_rating, height):
+    text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
+    cv2.putText(frame, text, (24, height - 54), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (230, 230, 230), 2)
+
+
+def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height):
+    x1 = 24
+    x2 = width - 24
+    y = height - 24
+    progress = (map_time - start_map_time) / max(1, end_map_time - start_map_time)
+    progress = max(0.0, min(1.0, progress))
+    current_x = int(x1 + (x2 - x1) * progress)
+    cv2.line(frame, (x1, y), (x2, y), (80, 80, 86), 4)
+    cv2.line(frame, (x1, y), (current_x, y), (90, 200, 230), 4)
+    cv2.circle(frame, (current_x, y), 6, (230, 230, 230), -1)
+
+
 def latest_judgement(judgements, lane, kind, time):
     for judgement in judgements:
         if judgement["lane"] == lane and judgement["kind"] == kind and judgement["time"] == time:
@@ -656,6 +674,7 @@ def frame_worker(frame_id):
     height = CTX["height"]
     fps = CTX["fps"]
     start_map_time = CTX["start_map_time"]
+    end_map_time = CTX["end_map_time"]
     notes = CTX["notes"]
     keys = CTX["keys"]
     title = CTX["title"]
@@ -750,7 +769,8 @@ def frame_worker(frame_id):
 
     visible_margin = 500
     visible_start = map_time - visible_margin
-    visible_end = map_time + scroll_time_ms + visible_margin
+    effective_scroll_time_ms = scroll_time_ms * speed_multiplier
+    visible_end = map_time + effective_scroll_time_ms + visible_margin
 
     pressed = [False] * keys
 
@@ -807,7 +827,7 @@ def frame_worker(frame_id):
         note_h = max(12, int(lane_width * 0.24))
         note_x = center_x - note_w // 2
         hit_y = judge_y - note_w // 2
-        lane_scroll_speed = max(0.01, (hit_y - top_y) / scroll_time_ms)
+        lane_scroll_speed = max(0.01, (hit_y - top_y) / effective_scroll_time_ms)
 
         y_head = int(hit_y - (note_time - map_time) * lane_scroll_speed)
         y_tail = int(hit_y - (end_time - map_time) * lane_scroll_speed)
@@ -892,6 +912,8 @@ def frame_worker(frame_id):
     draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths)
     draw_judgement_counter(frame, judgements, map_time, width)
     draw_pp_counter(frame, judgements, map_time, width, star_rating)
+    draw_star_rating(frame, star_rating, height)
+    draw_timeline(frame, map_time, start_map_time, end_map_time, width, height)
 
     combo_y = int((cfg.get("combo_position") or 58) * skin_scale)
     score_y = int((cfg.get("score_position") or 98) * skin_scale)
@@ -1023,6 +1045,7 @@ def write_debug_report(
     scroll_speed_value,
     scroll_time_ms,
     motion_blur,
+    star_rating,
     video_encoder_cmd=None,
 ):
     replay = get_replay(replay_file) if replay_file else None
@@ -1043,6 +1066,7 @@ def write_debug_report(
         "scroll_speed": scroll_speed_value,
         "scroll_time_ms": scroll_time_ms,
         "motion_blur": motion_blur,
+        "star_rating": star_rating,
         "video_encoder": video_encoder_cmd,
         "first_bad_judgements": bad_judgements[:100],
     }
@@ -1102,6 +1126,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
     is_convert = beatmap.mode != 3
 
     notes = [{"lane": n.lane, "time": n.time, "end_time": n.end_time} for n in beatmap.notes]
+    star_rating = read_mania_star_rating(osu_file, beatmap.md5_hash, mod_settings["mods_int"]) if replay_file else None
 
     if progress_callback:
         progress_callback(0, "Preparing render: analysing replay timing...")
@@ -1180,6 +1205,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "height": height,
         "fps": fps,
         "start_map_time": start_map_time,
+        "end_map_time": end_map_time,
         "notes": notes,
         "keys": beatmap.keys,
         "title": f"{beatmap.artist} - {beatmap.title} [{beatmap.version}] | {mod_settings['mods']}",
@@ -1194,7 +1220,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "event_lanes": event_lanes,
         "note_times": [note["time"] for note in notes],
         "judgement_lookup": judgement_lookup,
-        "star_rating": None,
+        "star_rating": star_rating,
         "replay_accuracy": replay_accuracy,
     }
 
@@ -1213,6 +1239,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         scroll_speed_value=scroll_speed_value,
         scroll_time_ms=scroll_time_ms,
         motion_blur=motion_blur,
+        star_rating=star_rating,
     )
 
     start = time.time()
