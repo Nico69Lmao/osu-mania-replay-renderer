@@ -17,6 +17,9 @@ Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr`
 - BPM dinamici per ciascun tasto, calcolati sulle pressioni degli ultimi due secondi.
 - Grafico di difficolta durante la play: sezione trascorsa verde, sezione futura grigia.
 - Schermata risultati finale basata sugli asset `ranking-panel` e `ranking-{rank}` della skin, con rank, judgement, combo, accuracy, score e pp.
+- Layout risultati legacy v2.0+ su spazio logico `1024x768`: `ranking-panel` a `(0,102)`, rank a 192px dal bordo destro e `y=320`, max combo `(8,480)`, accuracy `(291,480)`, graph `(256,608)` e perfect `(416,688)`.
+- Background della beatmap oscurato sotto il pannello risultati; nessun pulsante Back/replay/retry o Online Ranking viene renderizzato.
+- I judgement della schermata risultati seguono la gerarchia mania ufficiale: `hit*-0` nella root della skin, poi `hit*` statico.
 - PP counter con formula ufficiale osu!mania quando e disponibile una star rating; altrimenti mostra `pp: N/A`.
 - Star rating letta dalla cache `osu!.db` quando disponibile, scegliendo la voce mania per i mod del replay.
 - Indicatore temporale circolare grigio sotto le statistiche a destra.
@@ -112,5 +115,9 @@ pp = 8 * max(star_rating - 0.15, 0.05)^2.2
   https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/UI/DrawableManiaRuleset.cs
 - legacy mania hit position conversion
   https://github.com/ppy/osu/blob/master/osu.Game/Skinning/LegacyManiaSkinConfiguration.cs
+- coordinate e gerarchia degli elementi della ranking screen
+  https://osu.ppy.sh/wiki/en/Skinning/Interface#ranking-screen
+- gerarchia dei judgement nella ranking screen osu!mania
+  https://osu.ppy.sh/wiki/en/Skinning/FAQ#ranking-screen-hit-score-hierarchy
 - osu!mania performance calculator
   https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/Difficulty/ManiaPerformanceCalculator.cs

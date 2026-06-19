@@ -1,5 +1,6 @@
 from dataclasses import dataclass
 from hashlib import md5
+import csv
 
 
 @dataclass
@@ -16,6 +17,7 @@ class Beatmap:
     version: str
     creator: str
     audio_file: str
+    background_file: str
     md5_hash: str
     keys: int
     overall_difficulty: float
@@ -29,6 +31,7 @@ def parse_osu(path: str):
     version = "Unknown"
     creator = "Unknown"
     audio_file = ""
+    background_file = ""
     keys = 4
     overall_difficulty = 5.0
     mode = 3
@@ -73,6 +76,15 @@ def parse_osu(path: str):
             elif line.startswith("OverallDifficulty:"):
                 overall_difficulty = float(line.split(":", 1)[1].strip())
 
+        elif section == "[Events]":
+            try:
+                parts = next(csv.reader([line]))
+
+                if len(parts) >= 3 and parts[0].strip() == "0" and parts[1].strip() == "0":
+                    background_file = parts[2].strip()
+            except (csv.Error, StopIteration):
+                pass
+
         elif section == "[HitObjects]":
             parts = line.split(",")
 
@@ -98,6 +110,7 @@ def parse_osu(path: str):
         version=version,
         creator=creator,
         audio_file=audio_file,
+        background_file=background_file,
         md5_hash=md5_hash,
         keys=keys,
         overall_difficulty=overall_difficulty,

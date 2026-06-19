@@ -856,9 +856,9 @@ def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width,
         return
 
     ui_scale = overlay_scale(height)
-    x1 = int(20 * ui_scale)
     x2 = width - int(205 * ui_scale)
-    graph_h = max(20, int(40 * ui_scale))
+    x1 = x2 - int(260 * ui_scale)
+    graph_h = max(14, int(24 * ui_scale))
     y2 = height - int(14 * ui_scale)
     y1 = y2 - graph_h
 
@@ -914,64 +914,157 @@ def replay_rank(score, mods_int=0):
     return rank
 
 
-def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, pp, rank):
+def paste_legacy_ranking_asset(frame, image, density, x, y, origin="top_left"):
+    if image is None or not has_visible_alpha(image):
+        return
+
+    interface_scale = frame.shape[0] / 768
+    image_scale = interface_scale / max(1.0, density)
+    target_w = max(1, int(image.shape[1] * image_scale))
+    target_h = max(1, int(image.shape[0] * image_scale))
+    draw_x = int(x)
+    draw_y = int(y)
+
+    if origin == "center":
+        draw_x -= target_w // 2
+        draw_y -= target_h // 2
+    elif origin == "top_right":
+        draw_x -= target_w
+
+    paste_rgba(frame, image, draw_x, draw_y, target_w, target_h)
+
+
+def prepare_results_background(image, width, height, opacity=0.62):
+    if image is None:
+        return None
+
+    source_h, source_w = image.shape[:2]
+    scale = max(width / max(1, source_w), height / max(1, source_h))
+    resized_w = max(1, int(source_w * scale))
+    resized_h = max(1, int(source_h * scale))
+    resized = cv2.resize(image, (resized_w, resized_h), interpolation=cv2.INTER_AREA)
+    x = max(0, (resized_w - width) // 2)
+    y = max(0, (resized_h - height) // 2)
+    cropped = resized[y:y + height, x:x + width, :3]
+    return np.clip(cropped.astype(np.float32) * opacity, 0, 255).astype(np.uint8)
+
+
+def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, pp, rank, perfect=False, background=None):
     height, width = frame.shape[:2]
+    interface_scale = height / 768
+    skin_version = skin.get("cfg", {}).get("skin_version", 1.0)
+    is_v2 = skin_version >= 2.0
     panel = skin.get("ranking_panel")
 
-    if panel is not None:
-        target_ratio = width / max(1, height)
-        crop_h = min(panel.shape[0], max(1, int(panel.shape[1] / target_ratio)))
-        panel = panel[:crop_h]
-        paste_rgba(frame, panel, 0, 0, width, height)
+    if background is not None and background.shape[:2] == frame.shape[:2]:
+        frame[:] = background
     else:
         frame[:] = (24, 27, 36)
 
-    sx = width / 1366
-    sy = height / 768
-    scale = max(0.55, min(sx, sy))
-    draw_ui_text(frame, title, (int(35 * sx), int(54 * sy)), 0.58 * scale, (240, 245, 250), 1)
+    if panel is not None:
+        panel_y = (102 if is_v2 else 74) * interface_scale
+        paste_legacy_ranking_asset(
+            frame,
+            panel,
+            skin.get("ranking_panel_density", 1.0),
+            0,
+            panel_y,
+        )
+    elements = skin.get("ranking_elements", {})
+    element_densities = skin.get("ranking_element_densities", {})
+    rank_y = (320 if is_v2 else 272) * interface_scale
+    rank_x = width - 192 * interface_scale
+    paste_legacy_ranking_asset(
+        frame,
+        skin.get("ranking_ranks", {}).get(rank),
+        skin.get("ranking_rank_densities", {}).get(rank, 1.0),
+        rank_x,
+        rank_y,
+        "center",
+    )
+    paste_legacy_ranking_asset(
+        frame,
+        elements.get("maxcombo"),
+        element_densities.get("maxcombo", 1.0),
+        8 * interface_scale,
+        (480 if is_v2 else 500) * interface_scale,
+    )
+    paste_legacy_ranking_asset(
+        frame,
+        elements.get("accuracy"),
+        element_densities.get("accuracy", 1.0),
+        291 * interface_scale,
+        (480 if is_v2 else 500) * interface_scale,
+    )
+    paste_legacy_ranking_asset(
+        frame,
+        elements.get("graph"),
+        element_densities.get("graph", 1.0),
+        256 * interface_scale,
+        (608 if is_v2 else 576) * interface_scale,
+    )
+
+    if perfect:
+        paste_legacy_ranking_asset(
+            frame,
+            elements.get("perfect"),
+            element_densities.get("perfect", 1.0),
+            (416 if is_v2 else 320) * interface_scale,
+            688 * interface_scale,
+            "center",
+        )
+
+    paste_legacy_ranking_asset(
+        frame,
+        elements.get("title"),
+        element_densities.get("title", 1.0),
+        width - 32 * interface_scale,
+        0,
+        "top_right",
+    )
+
+    text_scale = max(0.55, interface_scale)
+    display_title = title if len(title) <= 82 else title[:79] + "..."
+    draw_ui_text(frame, display_title, (int(5 * interface_scale), int(28 * interface_scale)), 0.58 * text_scale, (240, 245, 250), 1)
 
     rows = [
         (("300g", counts.get("300g", 0)), ("300", counts.get("300", 0))),
         (("200", counts.get("200", 0)), ("100", counts.get("100", 0))),
         (("50", counts.get("50", 0)), ("Miss", counts.get("0", 0))),
     ]
-    row_ys = (165, 255, 345)
+    row_ys = (274, 368, 462)
+    ranking_hits = skin.get("ranking_hit_images", {})
 
     for row_y, row in zip(row_ys, rows):
-        for x, (label, value) in zip((55, 315), row):
-            draw_ui_text(frame, label, (int(x * sx), int(row_y * sy)), 0.54 * scale, (185, 210, 235), 1)
-            draw_ui_text(frame, str(value), (int((x + 190) * sx), int(row_y * sy)), 0.72 * scale, (250, 250, 252), 1, "right")
+        for label_x, value_x, (label, value) in zip((21, 340), (204, 522), row):
+            variants = ranking_hits.get(label, {})
+            preferred_density = 2.0 if height >= 800 and 2.0 in variants else 1.0
+            hit_image = variants.get(preferred_density)
 
-    draw_ui_text(frame, f"{max_combo}x", (int(165 * sx), int(438 * sy)), 0.68 * scale, (250, 250, 252), 1, "center")
-    draw_ui_text(frame, f"{accuracy:.2f}%", (int(420 * sx), int(438 * sy)), 0.68 * scale, (250, 250, 252), 1, "center")
-    draw_ui_text(frame, f"Score  {score:,}", (int(55 * sx), int(500 * sy)), 0.58 * scale, (235, 240, 245), 1)
+            if hit_image is None and variants:
+                preferred_density, hit_image = next(iter(variants.items()))
+
+            if hit_image is not None:
+                paste_legacy_ranking_asset(
+                    frame,
+                    hit_image,
+                    preferred_density,
+                    label_x * interface_scale,
+                    (row_y - 34) * interface_scale,
+                )
+            elif not variants:
+                draw_ui_text(frame, label, (int(label_x * interface_scale), int(row_y * interface_scale)), 0.54 * text_scale, (185, 210, 235), 1)
+
+            draw_ui_text(frame, str(value), (int(value_x * interface_scale), int(row_y * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "right")
+
+    draw_ui_text(frame, f"{max_combo}x", (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+    draw_ui_text(frame, f"{accuracy:.2f}%", (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+    draw_ui_text(frame, f"{score:,}", (int(354 * interface_scale), int(160 * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "center")
     pp_text = "pp  N/A" if pp is None else f"pp  {pp:.2f}"
-    draw_ui_text(frame, pp_text, (int(315 * sx), int(500 * sy)), 0.58 * scale, (235, 240, 245), 1)
+    draw_ui_text(frame, pp_text, (int(rank_x), int(575 * interface_scale)), 0.58 * text_scale, (235, 240, 245), 1, "center")
 
-    rank_img = skin.get("ranking_ranks", {}).get(rank)
-
-    if rank_img is not None:
-        bbox = alpha_bbox(rank_img)
-
-        if bbox:
-            x1, y1, x2, y2 = bbox
-            rank_img = rank_img[y1:y2, x1:x2]
-
-        source_h, source_w = rank_img.shape[:2]
-        max_w = int(360 * sx)
-        max_h = int(310 * sy)
-        rank_scale = min(max_w / max(1, source_w), max_h / max(1, source_h))
-        paste_rgba_centered_sized(
-            frame,
-            rank_img,
-            int(930 * sx),
-            int(265 * sy),
-            max(1, int(source_w * rank_scale)),
-            max(1, int(source_h * rank_scale)),
-        )
-    else:
-        draw_ui_text(frame, rank, (int(930 * sx), int(300 * sy)), 3.0 * scale, (245, 245, 250), 2, "center")
+    if skin.get("ranking_ranks", {}).get(rank) is None:
+        draw_ui_text(frame, rank, (int(rank_x), int(rank_y)), 3.0 * text_scale, (245, 245, 250), 2, "center")
 
 
 def write_render_frame(output_dir, frame_id, frame):
@@ -1033,6 +1126,8 @@ def frame_worker(frame_id):
             CTX.get("replay_score", 0),
             CTX.get("final_pp"),
             CTX.get("replay_rank", "D"),
+            CTX.get("replay_perfect", False),
+            CTX.get("results_background"),
         )
         write_render_frame(output_dir, frame_id, frame)
         return frame_id
@@ -1509,6 +1604,9 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
 
     width, height = map(int, resolution.split("x"))
     fps = 60
+    background_path = Path(osu_file).parent / beatmap.background_file
+    background_image = cv2.imread(str(background_path), cv2.IMREAD_COLOR) if background_path.exists() else None
+    results_background = prepare_results_background(background_image, width, height)
 
     mod_settings = get_mod_settings(replay_file) if replay_file else {
         "mods_int": 0,
@@ -1570,6 +1668,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
     final_pp = mania_pp_value(star_rating, final_counts)
     replay_score = int(getattr(replay, "score", 0)) if replay else 0
     replay_max_combo = int(getattr(replay, "max_combo", 0)) if replay else 0
+    replay_perfect = bool(getattr(replay, "perfect", False)) if replay else False
     rank = replay_rank(replay_score, mod_settings["mods_int"])
     difficulty_profile = build_difficulty_profile(notes, start_map_time, gameplay_end_time)
 
@@ -1644,8 +1743,10 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "final_pp": final_pp,
         "replay_score": replay_score,
         "replay_max_combo": replay_max_combo,
+        "replay_perfect": replay_perfect,
         "replay_rank": rank,
         "difficulty_profile": difficulty_profile,
+        "results_background": results_background,
     }
 
     write_debug_report(

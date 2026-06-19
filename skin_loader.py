@@ -99,6 +99,7 @@ def parse_skin_ini(skin_folder: Path, keys: int):
 
     cfg = {
         "keys": keys,
+        "skin_version": 1.0,
         "column_start": None,
         "hit_position": None,
         "column_widths": None,
@@ -137,15 +138,21 @@ def parse_skin_ini(skin_folder: Path, keys: int):
                 current_mania = {} if current_section == "Mania" else None
                 continue
 
-            if current_section != "Mania":
-                continue
-
             if ":" not in line:
                 continue
 
             key, value = line.split(":", 1)
             key = clean_key(key)
             value = clean_value(value)
+
+            if current_section == "General" and key == "Version":
+                try:
+                    cfg["skin_version"] = float(value)
+                except ValueError:
+                    pass
+
+            if current_section != "Mania":
+                continue
 
             if current_mania is not None:
                 current_mania[key] = value
@@ -251,6 +258,7 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     empty = {
         "cfg": {
             "column_start": None,
+            "skin_version": 1.0,
             "hit_position": None,
             "column_widths": None,
             "column_spacing": [0] * (keys - 1),
@@ -274,7 +282,12 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "stage_light": None,
         "stage_hint": None,
         "ranking_panel": None,
+        "ranking_panel_density": 1.0,
         "ranking_ranks": {},
+        "ranking_rank_densities": {},
+        "ranking_elements": {},
+        "ranking_element_densities": {},
+        "ranking_hit_images": {},
     }
 
     if not skin_folder:
@@ -325,11 +338,41 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     skin["stage_bottom"] = read_image(find_image(folder, images.get("StageBottom")) or find_image(folder, "mania-stage-bottom"))
     skin["stage_light"] = read_image(find_image(folder, images.get("StageLight")) or find_image(folder, "mania-stage-light"))
     skin["stage_hint"] = read_image(find_image(folder, images.get("StageHint")) or find_image(folder, "mania-stage-hint"))
-    skin["ranking_panel"] = read_image(find_image(folder, "ranking-panel"))
-    skin["ranking_ranks"] = {
-        rank: read_image(find_image(folder, f"ranking-{rank.lower()}"))
-        for rank in ("X", "XH", "S", "SH", "A", "B", "C", "D")
+    ranking_panel_path = find_image(folder, "ranking-panel")
+    skin["ranking_panel"] = read_image(ranking_panel_path)
+    skin["ranking_panel_density"] = 2.0 if ranking_panel_path and "@2x" in ranking_panel_path.stem.lower() else 1.0
+
+    for rank in ("X", "XH", "S", "SH", "A", "B", "C", "D"):
+        path = find_image(folder, f"ranking-{rank.lower()}")
+        skin["ranking_ranks"][rank] = read_image(path)
+        skin["ranking_rank_densities"][rank] = 2.0 if path and "@2x" in path.stem.lower() else 1.0
+
+    for element in ("accuracy", "maxcombo", "graph", "perfect", "title"):
+        path = find_image(folder, f"ranking-{element}")
+        skin["ranking_elements"][element] = read_image(path)
+        skin["ranking_element_densities"][element] = 2.0 if path and "@2x" in path.stem.lower() else 1.0
+
+    ranking_hit_names = {
+        "300g": "hit300g",
+        "300": "hit300",
+        "200": "hit300k",
+        "100": "hit100",
+        "50": "hit50",
+        "0": "hit0",
     }
+
+    for key, name in ranking_hit_names.items():
+        variants = {}
+
+        for density, suffix in ((1.0, ".png"), (2.0, "@2x.png")):
+            animation_path = resolve_case_insensitive(folder / f"{name}-0{suffix}")
+            static_path = resolve_case_insensitive(folder / f"{name}{suffix}")
+            path = animation_path if animation_path.exists() else static_path
+
+            if path.exists():
+                variants[density] = read_image(path)
+
+        skin["ranking_hit_images"][key] = variants
 
     for value in ("0", "50", "100", "200", "300", "300g"):
         image_name = images.get(f"Hit{value}")
