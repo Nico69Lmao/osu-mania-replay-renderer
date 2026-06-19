@@ -12,11 +12,11 @@ Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr`
   - `Hit0`, `Hit50`, `Hit100`, `Hit200`, `Hit300`, `Hit300g`
   - stage/lane cover se l'asset esiste e ha alpha visibile
 - Long notes con body, head tenuta durante l'hold e release judgement.
-- Accuracy dinamica basata su OD della mappa.
+- Accuracy dinamica basata su OD e riconciliata con i conteggi ufficiali salvati nel replay OSR.
 - Counter per judgement: `300g`, `300`, `200`, `100`, `50`, `Miss`.
 - PP counter con formula ufficiale osu!mania quando e disponibile una star rating; altrimenti mostra `pp: N/A`.
 - Star rating letta dalla cache `osu!.db` quando disponibile, scegliendo la voce mania per i mod del replay.
-- Timeline in basso al video.
+- Indicatore temporale circolare compatto in alto al video.
 - Supporto mod speed:
   - DT: video e audio a `1.5x`
   - NC: video a `1.5x`, audio con pitch alto tramite `asetrate`
@@ -39,6 +39,7 @@ Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr`
 4. `renderer.py` calcola i judgement:
    - le finestre mania native usano OD: `300 = 64 - 3*OD`, `200 = 97 - 3*OD`, ecc.
    - le LN usano head/release per visual, ma il risultato che conta viene risolto al release.
+   - i timing ordinano i risultati per nota, mentre `count_geki`, `count_300`, `count_katu`, `count_100`, `count_50` e `count_miss` dell'OSR garantiscono conteggi finali identici a osu!stable.
 5. Ogni frame viene generato in parallelo:
    - calcolo `map_time`
    - note visibili tramite binary search
@@ -68,8 +69,20 @@ Per ogni render viene scritto anche un file `.debug.json` accanto al video. Cont
 - OD e hit windows usate
 - scroll speed e travel time
 - encoder ffmpeg usato
+- esito ed errore di ogni tentativo VAAPI/QSV/AMF/libx264
+- conteggi judgement simulati e conferma della riconciliazione OSR
 - star rating letta da `osu!.db`
 - primi judgement non perfetti
+
+## Accelerazione Intel su Arch/EndeavourOS
+
+Per una Intel Iris Xe servono il driver VAAPI Intel e gli strumenti di verifica:
+
+```bash
+sudo pacman -S --needed intel-media-driver libva-utils
+```
+
+Verifica il driver con `vainfo` e monitora l'encoding con `sudo intel_gpu_top`. Nel file `.debug.json`, `video_encoder` deve contenere `h264_vaapi`; se VAAPI fallisce, `video_encoder_attempts` conserva l'errore e il renderer passa automaticamente all'encoder successivo.
 
 ## Note sui PP
 

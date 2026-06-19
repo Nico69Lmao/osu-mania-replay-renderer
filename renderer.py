@@ -21,6 +21,28 @@ MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
 
 
+def draw_ui_text(frame, text, origin, scale=0.6, color=(235, 235, 235), thickness=1, anchor="left"):
+    """Draw readable antialiased overlay text with a subtle dark edge."""
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    line_type = cv2.LINE_AA
+    (text_w, _), _ = cv2.getTextSize(text, font, scale, thickness)
+    x, y = origin
+
+    if anchor == "right":
+        x -= text_w
+    elif anchor == "center":
+        x -= text_w // 2
+
+    cv2.putText(frame, text, (x + 1, y + 1), font, scale, (0, 0, 0), thickness + 2, line_type)
+    cv2.putText(frame, text, (x, y), font, scale, color, thickness, line_type)
+
+
+def format_clock(milliseconds):
+    seconds = max(0, int(milliseconds // 1000))
+    minutes, seconds = divmod(seconds, 60)
+    return f"{minutes}:{seconds:02d}"
+
+
 def paste_rgba(frame, img, x, y, w=None, h=None):
     if img is None:
         return
@@ -273,6 +295,76 @@ def hit_image_key(value, diff=None):
     return str(value)
 
 
+def replay_judgement_counts(replay):
+    return {
+        "300g": int(getattr(replay, "count_geki", 0)),
+        "300": int(getattr(replay, "count_300", 0)),
+        "200": int(getattr(replay, "count_katu", 0)),
+        "100": int(getattr(replay, "count_100", 0)),
+        "50": int(getattr(replay, "count_50", 0)),
+        "0": int(getattr(replay, "count_miss", 0)),
+    }
+
+
+def judgement_counts(judgements):
+    counts = {key: 0 for key in ("300g", "300", "200", "100", "50", "0")}
+
+    for judgement in judgements:
+        if judgement.get("counts_accuracy", True):
+            key = judgement.get("image_key") or hit_image_key(judgement["value"], judgement.get("diff"))
+            counts[key] = counts.get(key, 0) + 1
+
+    return counts
+
+
+def reconcile_judgements_with_replay(judgements, target_counts):
+    """Match stable's aggregate OSR results while retaining timing-based per-note ordering.
+
+    Stable replay frames do not contain the judgement assigned to each object. They do
+    contain authoritative aggregate counts, so timing error ranks provide the most
+    plausible per-object assignment and the OSR counts provide the exact final result.
+    """
+    scoring = [j for j in judgements if j.get("counts_accuracy", True)]
+
+    if len(scoring) != sum(target_counts.values()):
+        return False
+
+    ranked = sorted(
+        scoring,
+        key=lambda j: (
+            j.get("diff") is None,
+            j.get("diff") if j.get("diff") is not None else float("inf"),
+            j["time"],
+        ),
+    )
+    cursor = 0
+
+    for key in ("300g", "300", "200", "100", "50", "0"):
+        value = 300 if key in ("300g", "300") else int(key)
+
+        for judgement in ranked[cursor:cursor + target_counts[key]]:
+            judgement["value"] = value
+            judgement["image_key"] = key
+
+        cursor += target_counts[key]
+
+    combo = 0
+    judged = 0
+    score_sum = 0
+
+    for judgement in judgements:
+        if judgement.get("counts_accuracy", True):
+            value = judgement["value"]
+            combo = combo + 1 if value > 0 else 0
+            judged += 1
+            score_sum += value
+
+        judgement["combo"] = combo
+        judgement["accuracy"] = (score_sum / (judged * 300)) * 100 if judged else 100.0
+
+    return True
+
+
 def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_convert=False):
     windows = mania_hit_windows(overall_difficulty, is_convert)
     press_events = [e for e in events if e["pressed"]]
@@ -414,7 +506,7 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
     return results, debug_bad
 
 
-def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_convert=False):
+def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_convert=False, target_counts=None):
     best_offset = 0
     best_score = None
     best_judgements = []
@@ -434,7 +526,13 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
         test_accuracy = test_judgements[-1]["accuracy"] if test_judgements else 100.0
         misses = sum(1 for j in test_judgements if j["value"] == 0)
         timing_error = sum((j["diff"] or 180) for j in test_judgements)
-        score = (-test_accuracy, misses, timing_error)
+        count_error = 0
+
+        if target_counts:
+            test_counts = judgement_counts(test_judgements)
+            count_error = sum(abs(test_counts[key] - target_counts[key]) for key in target_counts)
+
+        score = (count_error, -test_accuracy, misses, timing_error)
 
         if best_score is None or score < best_score:
             best_score = score
@@ -561,7 +659,7 @@ def draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_width
         paste_rgba_centered(frame, draw_img, play_center_x, y, scale=1.0, max_width=180)
 
 
-def draw_judgement_counter(frame, judgements, map_time, width):
+def draw_judgement_counter(frame, judgements, map_time, width, top_y):
     counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
 
     for judgement in judgements:
@@ -585,12 +683,15 @@ def draw_judgement_counter(frame, judgements, map_time, width):
         ("Miss", counts["0"], (230, 80, 80)),
     ]
 
-    x = width - 175
-    y = 105
+    ui_scale = max(0.8, frame.shape[0] / 900)
+    x = width - int(24 * ui_scale)
+    y = top_y
 
     for label, count, color in labels:
-        cv2.putText(frame, f"{label}: {count}", (x, y), cv2.FONT_HERSHEY_SIMPLEX, 0.48, color, 2)
-        y += 24
+        draw_ui_text(frame, f"{label}: {count}", (x, y), 0.48 * ui_scale, color, 1, "right")
+        y += int(24 * ui_scale)
+
+    return y
 
 
 def mania_pp_value(star_rating, counts):
@@ -637,28 +738,53 @@ def judgement_counts_at(judgements, map_time):
     return counts
 
 
-def draw_pp_counter(frame, judgements, map_time, width, star_rating):
+def draw_pp_counter(frame, judgements, map_time, width, y, star_rating):
     counts = judgement_counts_at(judgements, map_time)
     pp = mania_pp_value(star_rating, counts)
     text = "pp: N/A" if pp is None else f"pp: {pp:.2f}"
-    cv2.putText(frame, text, (width - 185, 365), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 2)
+    ui_scale = max(0.8, frame.shape[0] / 900)
+    draw_ui_text(frame, text, (width - int(24 * ui_scale), y), 0.56 * ui_scale, (220, 220, 220), 1, "right")
 
 
 def draw_star_rating(frame, star_rating, height):
     text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
-    cv2.putText(frame, text, (24, height - 54), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (230, 230, 230), 2)
+    ui_scale = max(0.8, height / 900)
+    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(24 * ui_scale)), 0.56 * ui_scale)
 
 
 def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height):
-    x1 = 24
-    x2 = width - 24
-    y = height - 24
     progress = (map_time - start_map_time) / max(1, end_map_time - start_map_time)
     progress = max(0.0, min(1.0, progress))
-    current_x = int(x1 + (x2 - x1) * progress)
-    cv2.line(frame, (x1, y), (x2, y), (80, 80, 86), 4)
-    cv2.line(frame, (x1, y), (current_x, y), (90, 200, 230), 4)
-    cv2.circle(frame, (current_x, y), 6, (230, 230, 230), -1)
+    ui_scale = max(0.8, height / 900)
+    radius = max(14, int(18 * ui_scale))
+    center = (width // 2, int(28 * ui_scale))
+    thickness = max(2, int(3 * ui_scale))
+    cv2.circle(frame, center, radius, (38, 38, 43), -1, cv2.LINE_AA)
+
+    if progress > 0:
+        cv2.ellipse(
+            frame,
+            center,
+            (radius, radius),
+            -90,
+            0,
+            progress * 360,
+            (90, 205, 235),
+            -1,
+            cv2.LINE_AA,
+        )
+
+    cv2.circle(frame, center, radius, (205, 205, 210), thickness, cv2.LINE_AA)
+
+    elapsed = map_time - start_map_time
+    duration = end_map_time - start_map_time
+    draw_ui_text(
+        frame,
+        f"{format_clock(elapsed)} / {format_clock(duration)}",
+        (center[0] + radius + int(10 * ui_scale), center[1] + int(5 * ui_scale)),
+        0.42 * ui_scale,
+        (215, 215, 220),
+    )
 
 
 def latest_judgement(judgements, lane, kind, time):
@@ -690,7 +816,6 @@ def frame_worker(frame_id):
     note_times = CTX.get("note_times", [])
     judgement_lookup = CTX.get("judgement_lookup", {})
     star_rating = CTX.get("star_rating")
-    replay_accuracy = CTX.get("replay_accuracy", 100.0)
 
     real_elapsed = int(frame_id * 1000 / fps)
     map_time = start_map_time + int(real_elapsed * speed_multiplier)
@@ -750,7 +875,16 @@ def frame_worker(frame_id):
         colour = skin_colour_to_bgra(cfg["colours"].get(f"Colour{lane + 1}"))
         fill_rgba_rect(frame, lane_xs[lane], top_y, lane_xs[lane] + column_widths[lane], height, colour)
 
-    cv2.putText(frame, title[:95], (22, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (210, 210, 210), 1)
+    ui_scale = max(0.8, height / 900)
+    title_limit = max(24, int((width * 0.42) / max(1, 7 * 0.42 * ui_scale)))
+    display_title = title if len(title) <= title_limit else title[:max(1, title_limit - 3)] + "..."
+    draw_ui_text(
+        frame,
+        display_title,
+        (int(22 * ui_scale), int(30 * ui_scale)),
+        0.42 * ui_scale,
+        (210, 210, 215),
+    )
 
     combo = 0
     accuracy = 100.0
@@ -910,16 +1044,16 @@ def frame_worker(frame_id):
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
 
     draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths)
-    draw_judgement_counter(frame, judgements, map_time, width)
-    draw_pp_counter(frame, judgements, map_time, width, star_rating)
+    right_x = width - int(24 * ui_scale)
+    stats_y = int(50 * ui_scale)
+    draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
+    stats_y += int(32 * ui_scale)
+    draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
+    stats_y += int(38 * ui_scale)
+    stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y)
+    draw_pp_counter(frame, judgements, map_time, width, stats_y + int(10 * ui_scale), star_rating)
     draw_star_rating(frame, star_rating, height)
     draw_timeline(frame, map_time, start_map_time, end_map_time, width, height)
-
-    combo_y = int((cfg.get("combo_position") or 58) * skin_scale)
-    score_y = int((cfg.get("score_position") or 98) * skin_scale)
-
-    cv2.putText(frame, f"{combo}x", (width - 185, combo_y), cv2.FONT_HERSHEY_SIMPLEX, 0.95, (240, 240, 240), 2)
-    cv2.putText(frame, f"{accuracy:.2f}%", (width - 190, score_y), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (220, 220, 220), 2)
 
     out = Path(output_dir) / f"frame_{frame_id:07d}.png"
     cv2.imwrite(str(out), frame)
@@ -1016,18 +1150,38 @@ def video_encode_commands(fps, frames_dir, silent_video):
     ]
 
 
-def encode_silent_video(fps, frames_dir, silent_video):
+def encode_silent_video(fps, frames_dir, silent_video, progress_callback=None):
     last_error = None
+    attempts = []
 
     for cmd in video_encode_commands(fps, frames_dir, silent_video):
+        encoder = cmd[cmd.index("-c:v") + 1]
+
+        if progress_callback:
+            progress_callback(87, f"Encoding video: trying {encoder}...")
+
         try:
-            subprocess.run(cmd, check=True)
-            return cmd
+            env = os.environ.copy()
+
+            if encoder in ("h264_vaapi", "h264_qsv") and Path("/usr/lib/dri/iHD_drv_video.so").exists():
+                env.setdefault("LIBVA_DRIVER_NAME", "iHD")
+
+            result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
+            attempts.append({"encoder": encoder, "status": "success"})
+            return cmd, attempts
         except subprocess.CalledProcessError as e:
             last_error = e
+            stderr = (e.stderr or "").strip().splitlines()
+            attempts.append({
+                "encoder": encoder,
+                "status": "failed",
+                "error": "\n".join(stderr[-8:]),
+            })
 
     if last_error:
         raise last_error
+
+    return None, attempts
 
 
 def write_debug_report(
@@ -1047,6 +1201,9 @@ def write_debug_report(
     motion_blur,
     star_rating,
     video_encoder_cmd=None,
+    video_encoder_attempts=None,
+    judgement_counts_reconciled=False,
+    simulated_judgement_counts=None,
 ):
     replay = get_replay(replay_file) if replay_file else None
 
@@ -1068,6 +1225,9 @@ def write_debug_report(
         "motion_blur": motion_blur,
         "star_rating": star_rating,
         "video_encoder": video_encoder_cmd,
+        "video_encoder_attempts": video_encoder_attempts or [],
+        "judgement_counts_reconciled": judgement_counts_reconciled,
+        "simulated_judgement_counts": simulated_judgement_counts or {},
         "first_bad_judgements": bad_judgements[:100],
     }
 
@@ -1132,7 +1292,9 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         progress_callback(0, "Preparing render: analysing replay timing...")
 
     events = get_replay_events(replay_file, beatmap.keys) if replay_file else []
+    replay = get_replay(replay_file) if replay_file else None
     replay_accuracy = get_stable_mania_accuracy(replay_file) if replay_file else 100.0
+    target_counts = replay_judgement_counts(replay) if replay else None
 
     if events:
         judgements, bad_judgements = build_judgements(notes, events, beatmap.keys, mirror, overall_difficulty, is_convert)
@@ -1148,11 +1310,17 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
                 mirror,
                 overall_difficulty,
                 is_convert,
+                target_counts,
             )
     else:
         best_offset, judgements, bad_judgements = 0, [], []
         simulated_accuracy = 100.0
 
+    counts_reconciled = bool(judgements and target_counts and reconcile_judgements_with_replay(judgements, target_counts))
+    bad_judgements = [
+        j for j in judgements
+        if j.get("counts_accuracy", True) and j["value"] < 300
+    ][:100]
     simulated_accuracy = judgements[-1]["accuracy"] if judgements else 100.0
 
     start_map_time = max(0, notes[0]["time"] - 2000)
@@ -1240,6 +1408,8 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         scroll_time_ms=scroll_time_ms,
         motion_blur=motion_blur,
         star_rating=star_rating,
+        judgement_counts_reconciled=counts_reconciled,
+        simulated_judgement_counts=judgement_counts(judgements),
     )
 
     start = time.time()
@@ -1280,7 +1450,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
 
     silent_video = temp_dir / "silent.mp4"
 
-    encoder_cmd = encode_silent_video(fps, frames_dir, silent_video)
+    encoder_cmd, encoder_attempts = encode_silent_video(fps, frames_dir, silent_video, progress_callback)
     debug_path = Path(output_file).with_suffix(".debug.json")
 
     if debug_path.exists():
@@ -1289,6 +1459,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
                 debug_data = json.load(f)
 
             debug_data["video_encoder"] = encoder_cmd
+            debug_data["video_encoder_attempts"] = encoder_attempts
 
             with open(debug_path, "w", encoding="utf-8") as f:
                 json.dump(debug_data, f, indent=4, ensure_ascii=False)
@@ -1296,7 +1467,8 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
             pass
 
     if progress_callback:
-        progress_callback(90, "Encoding audio/video...")
+        encoder_name = encoder_cmd[encoder_cmd.index("-c:v") + 1]
+        progress_callback(90, f"Encoding audio/video with {encoder_name}...")
 
     audio_path = Path(osu_file).parent / beatmap.audio_file
 
