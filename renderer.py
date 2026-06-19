@@ -43,6 +43,10 @@ def format_clock(milliseconds):
     return f"{minutes}:{seconds:02d}"
 
 
+def overlay_scale(height):
+    return max(0.58, min(1.8, height / 900))
+
+
 def paste_rgba(frame, img, x, y, w=None, h=None):
     if img is None:
         return
@@ -620,10 +624,18 @@ def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
     if stage_bottom is None or not has_visible_alpha(stage_bottom):
         return
 
-    cover_h = min(height, int(stage_bottom.shape[0] * skin_scale))
     bbox = alpha_bbox(stage_bottom)
-    y = 0 if bbox and bbox[3] <= stage_bottom.shape[0] / 2 else height - cover_h
-    paste_rgba(frame, stage_bottom, play_x, y, play_width, cover_h)
+
+    if bbox and bbox[3] <= stage_bottom.shape[0] / 2:
+        x1, y1, x2, y2 = bbox
+        visible_cover = stage_bottom[y1:y2, x1:x2]
+        aspect_height = int(play_width * visible_cover.shape[0] / max(1, visible_cover.shape[1]))
+        cover_h = max(1, min(aspect_height, int(48 * skin_scale)))
+        paste_rgba(frame, visible_cover, play_x, 0, play_width, cover_h)
+        return
+
+    cover_h = min(height, int(stage_bottom.shape[0] * skin_scale))
+    paste_rgba(frame, stage_bottom, play_x, height - cover_h, play_width, cover_h)
 
 
 def draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths):
@@ -683,7 +695,7 @@ def draw_judgement_counter(frame, judgements, map_time, width, top_y):
         ("Miss", counts["0"], (230, 80, 80)),
     ]
 
-    ui_scale = max(0.8, frame.shape[0] / 900)
+    ui_scale = overlay_scale(frame.shape[0])
     x = width - int(24 * ui_scale)
     y = top_y
 
@@ -742,22 +754,51 @@ def draw_pp_counter(frame, judgements, map_time, width, y, star_rating):
     counts = judgement_counts_at(judgements, map_time)
     pp = mania_pp_value(star_rating, counts)
     text = "pp: N/A" if pp is None else f"pp: {pp:.2f}"
-    ui_scale = max(0.8, frame.shape[0] / 900)
+    ui_scale = overlay_scale(frame.shape[0])
     draw_ui_text(frame, text, (width - int(24 * ui_scale), y), 0.56 * ui_scale, (220, 220, 220), 1, "right")
+
+    return y + int(28 * ui_scale)
+
+
+def draw_key_bpms(frame, event_lanes, map_time, width, y):
+    ui_scale = overlay_scale(frame.shape[0])
+    right_x = width - int(24 * ui_scale)
+    window_ms = 2000
+    draw_ui_text(frame, "BPM / key", (right_x, y), 0.46 * ui_scale, (190, 190, 195), 1, "right")
+    y += int(22 * ui_scale)
+
+    for lane, (times, states) in enumerate(event_lanes):
+        start_i = bisect_left(times, map_time - window_ms)
+        end_i = bisect_right(times, map_time)
+        presses = sum(1 for pressed in states[start_i:end_i] if pressed)
+        bpm = int(round(presses * 60000 / window_ms))
+        draw_ui_text(
+            frame,
+            f"K{lane + 1}: {bpm}",
+            (right_x, y),
+            0.44 * ui_scale,
+            (205, 205, 210),
+            1,
+            "right",
+        )
+        y += int(20 * ui_scale)
+
+    return y
 
 
 def draw_star_rating(frame, star_rating, height):
     text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
-    ui_scale = max(0.8, height / 900)
+    ui_scale = overlay_scale(height)
     draw_ui_text(frame, text, (int(24 * ui_scale), height - int(24 * ui_scale)), 0.56 * ui_scale)
 
 
-def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height):
+def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, y):
     progress = (map_time - start_map_time) / max(1, end_map_time - start_map_time)
     progress = max(0.0, min(1.0, progress))
-    ui_scale = max(0.8, height / 900)
-    radius = max(14, int(18 * ui_scale))
-    center = (width // 2, int(28 * ui_scale))
+    ui_scale = overlay_scale(height)
+    radius = max(11, int(16 * ui_scale))
+    right_x = width - int(24 * ui_scale)
+    center = (right_x - radius, y + radius)
     thickness = max(2, int(3 * ui_scale))
     cv2.circle(frame, center, radius, (38, 38, 43), -1, cv2.LINE_AA)
 
@@ -769,7 +810,7 @@ def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height):
             -90,
             0,
             progress * 360,
-            (90, 205, 235),
+            (145, 145, 150),
             -1,
             cv2.LINE_AA,
         )
@@ -781,9 +822,11 @@ def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height):
     draw_ui_text(
         frame,
         f"{format_clock(elapsed)} / {format_clock(duration)}",
-        (center[0] + radius + int(10 * ui_scale), center[1] + int(5 * ui_scale)),
+        (center[0] - radius - int(9 * ui_scale), center[1] + int(5 * ui_scale)),
         0.42 * ui_scale,
         (215, 215, 220),
+        1,
+        "right",
     )
 
 
@@ -875,7 +918,7 @@ def frame_worker(frame_id):
         colour = skin_colour_to_bgra(cfg["colours"].get(f"Colour{lane + 1}"))
         fill_rgba_rect(frame, lane_xs[lane], top_y, lane_xs[lane] + column_widths[lane], height, colour)
 
-    ui_scale = max(0.8, height / 900)
+    ui_scale = overlay_scale(height)
     title_limit = max(24, int((width * 0.42) / max(1, 7 * 0.42 * ui_scale)))
     display_title = title if len(title) <= title_limit else title[:max(1, title_limit - 3)] + "..."
     draw_ui_text(
@@ -1051,9 +1094,25 @@ def frame_worker(frame_id):
     draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
     stats_y += int(38 * ui_scale)
     stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y)
-    draw_pp_counter(frame, judgements, map_time, width, stats_y + int(10 * ui_scale), star_rating)
+    stats_y = draw_pp_counter(
+        frame,
+        judgements,
+        map_time,
+        width,
+        stats_y + int(10 * ui_scale),
+        star_rating,
+    )
+    stats_y = draw_key_bpms(frame, event_lanes, map_time, width, stats_y + int(8 * ui_scale))
+    draw_timeline(
+        frame,
+        map_time,
+        start_map_time,
+        end_map_time,
+        width,
+        height,
+        stats_y + int(8 * ui_scale),
+    )
     draw_star_rating(frame, star_rating, height)
-    draw_timeline(frame, map_time, start_map_time, end_map_time, width, height)
 
     out = Path(output_dir) / f"frame_{frame_id:07d}.png"
     cv2.imwrite(str(out), frame)

@@ -14,9 +14,10 @@ Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr`
 - Long notes con body, head tenuta durante l'hold e release judgement.
 - Accuracy dinamica basata su OD e riconciliata con i conteggi ufficiali salvati nel replay OSR.
 - Counter per judgement: `300g`, `300`, `200`, `100`, `50`, `Miss`.
+- BPM dinamici per ciascun tasto, calcolati sulle pressioni degli ultimi due secondi.
 - PP counter con formula ufficiale osu!mania quando e disponibile una star rating; altrimenti mostra `pp: N/A`.
 - Star rating letta dalla cache `osu!.db` quando disponibile, scegliendo la voce mania per i mod del replay.
-- Indicatore temporale circolare compatto in alto al video.
+- Indicatore temporale circolare grigio sotto le statistiche a destra.
 - Supporto mod speed:
   - DT: video e audio a `1.5x`
   - NC: video a `1.5x`, audio con pitch alto tramite `asetrate`
