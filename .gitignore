@@ -1,0 +1,9 @@
+__pycache__/
+*.pyc
+Output_Test/
+*.debug.json
+*.mp4
+*.osr
+*.osu
+venv/
+.mania-render-*/
