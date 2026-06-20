@@ -1,4 +1,4 @@
-from osu_finder import get_replay
+from osu_mania_replay_renderer.osu_finder import get_replay
 
 
 def get_key_bits(keys_obj):

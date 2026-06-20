@@ -6,4 +6,5 @@ Output_Test/
 *.osr
 *.osu
 venv/
+.venv/
 .mania-render-*/

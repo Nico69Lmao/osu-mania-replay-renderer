@@ -7,9 +7,9 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import QThread, Signal
 
-from osu_finder import list_skins, find_beatmap_from_replay, get_replay_info
-from renderer import render_video
-from settings import load_settings, update_setting
+from osu_mania_replay_renderer.osu_finder import list_skins, find_beatmap_from_replay, get_replay_info
+from osu_mania_replay_renderer.renderer import render_video
+from osu_mania_replay_renderer.settings import load_settings, update_setting
 
 
 class RenderThread(QThread):

@@ -1,7 +1,9 @@
-import sys
 import multiprocessing as mp
+import sys
+
 from PySide6.QtWidgets import QApplication
-from gui import MainWindow
+
+from osu_mania_replay_renderer.gui import MainWindow
 
 
 def main():
