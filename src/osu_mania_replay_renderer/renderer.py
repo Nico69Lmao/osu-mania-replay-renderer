@@ -779,60 +779,40 @@ def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
     paste_rgba(frame, stage_bottom, play_x, height - cover_h, play_width, cover_h)
 
 
-def draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths):
+def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane_xs, column_widths, judge_y, note_widths):
     if not lane_xs:
         return
 
     play_center_x = (lane_xs[0] + lane_xs[-1] + column_widths[-1]) // 2
     cfg = skin.get("cfg", {})
     skin_scale = frame.shape[0] / 480
-    judgement_y = int((cfg.get("score_position") if cfg.get("score_position") is not None else 300) * skin_scale)
+    score_position = cfg.get("score_position") if cfg.get("score_position") is not None else 300
+    combo_position = cfg.get("combo_position") if cfg.get("combo_position") is not None else 111
+    judgement_y = int(max(score_position, combo_position + 50) * skin_scale)
+    latest_i = bisect_right(judgement_times, map_time) - 1
 
-    for judgement in judgements:
-        display_time = judgement.get("display_time", judgement["time"])
-        age = map_time - display_time
+    if latest_i < 0:
+        return
 
-        if age < 0 or age > 220:
-            continue
+    latest = judgements[latest_i]
 
-        value = judgement["value"]
-        key = judgement.get("image_key") or hit_image_key(value, judgement.get("diff"))
-        img = skin.get("hit_images", {}).get(key)
+    display_time = latest.get("display_time", latest["time"])
 
-        if img is None:
-            continue
+    if map_time - display_time > 1000:
+        return
 
-        if age < 20:
-            alpha_scale = age / 20.0
-        elif age <= 180:
-            alpha_scale = 1.0
-        else:
-            alpha_scale = max(0.0, 1.0 - (age - 180) / 40.0)
+    value = latest["value"]
+    key = latest.get("image_key") or hit_image_key(value, latest.get("diff"))
+    img = skin.get("hit_images", {}).get(key)
 
-        if value == 0:
-            image_scale = 1.2 - 0.2 * min(1.0, age / 100.0)
-        elif age < 40:
-            image_scale = 0.8 + 0.2 * (age / 40.0)
-        elif age < 80:
-            image_scale = 1.0 - 0.3 * ((age - 40.0) / 40.0)
-        elif age < 180:
-            image_scale = 0.7
-        else:
-            image_scale = 0.7 - 0.3 * ((age - 180.0) / 40.0)
-
-        draw_img = img.copy()
-
-        if len(draw_img.shape) == 3 and draw_img.shape[2] == 4:
-            draw_img[:, :, 3] = (draw_img[:, :, 3].astype(np.float32) * alpha_scale).astype(np.uint8)
-
-        max_width = max(1, int(180 * skin_scale * image_scale))
+    if img is not None:
         paste_rgba_centered(
             frame,
-            draw_img,
+            img,
             play_center_x,
             judgement_y,
-            scale=skin_scale * image_scale,
-            max_width=max_width,
+            scale=skin_scale,
+            max_width=max(1, int(180 * skin_scale)),
         )
 
 
@@ -925,24 +905,85 @@ def draw_pp_counter(frame, judgements, map_time, width, y, star_rating):
     return y + int(28 * ui_scale)
 
 
-def draw_key_bpms(frame, event_lanes, map_time, width, y):
+def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
     ui_scale = overlay_scale(frame.shape[0])
     right_x = width - int(24 * ui_scale)
     window_ms = 2000
-    draw_ui_text(frame, "BPM / key", (right_x, y), 0.46 * ui_scale, (190, 190, 195), 1, "right")
-    y += int(22 * ui_scale)
+    lane_count = max(1, len(event_lanes))
+    lane_w = max(18, int(25 * ui_scale))
+    lane_gap = max(4, int(6 * ui_scale))
+    total_w = lane_count * lane_w + (lane_count - 1) * lane_gap
+    x1 = right_x - total_w
+    history_top = y + int(18 * ui_scale)
+    history_h = max(76, int(108 * ui_scale))
+    history_bottom = history_top + history_h
+    key_top = history_bottom + int(7 * ui_scale)
+    key_h = max(17, int(22 * ui_scale))
+
+    draw_ui_text(frame, "INPUT / BPM", (right_x, y), 0.42 * ui_scale, (190, 190, 195), 1, "right")
+    overlay = frame.copy()
+    cv2.rectangle(
+        overlay,
+        (x1 - int(6 * ui_scale), history_top - int(4 * ui_scale)),
+        (right_x + int(5 * ui_scale), key_top + key_h + int(28 * ui_scale)),
+        (12, 12, 15),
+        -1,
+    )
+    cv2.addWeighted(overlay, 0.58, frame, 0.42, 0, frame)
 
     for lane, (times, states) in enumerate(event_lanes):
-        start_i = bisect_left(times, map_time - window_ms)
+        lane_x = x1 + lane * (lane_w + lane_gap)
+        start_i = max(0, bisect_left(times, map_time - window_ms) - 1)
         end_i = bisect_right(times, map_time)
-        presses = sum(1 for pressed in states[start_i:end_i] if pressed)
-        bpm = int(round(presses * 60000 / window_ms))
-        value_column_width = int(30 * ui_scale)
-        draw_ui_text(frame, f"K{lane + 1}:", (right_x - value_column_width, y), 0.44 * ui_scale, (205, 205, 210), 1, "right")
-        draw_ui_text(frame, str(bpm), (right_x, y), 0.44 * ui_scale, (205, 205, 210), 1, "right")
-        y += int(20 * ui_scale)
 
-    return y
+        for event_i in range(start_i, end_i):
+            if not states[event_i]:
+                continue
+
+            press_time = max(map_time - window_ms, times[event_i])
+            release_time = map_time
+
+            if event_i + 1 < len(times):
+                release_time = min(map_time, times[event_i + 1])
+
+            if release_time < map_time - window_ms:
+                continue
+
+            top = history_bottom - int((map_time - press_time) / window_ms * history_h)
+            bottom = history_bottom - int((map_time - release_time) / window_ms * history_h)
+            top = max(history_top, min(history_bottom, top))
+            bottom = max(top + 3, min(history_bottom, bottom))
+            cv2.rectangle(frame, (lane_x, top), (lane_x + lane_w, bottom), (202, 207, 186), -1)
+
+        is_pressed = bool(pressed[lane]) if lane < len(pressed) else False
+        key_colour = (90, 205, 245) if is_pressed else (30, 31, 34)
+        border_colour = (120, 225, 255) if is_pressed else (150, 126, 55)
+        cv2.rectangle(frame, (lane_x, key_top), (lane_x + lane_w, key_top + key_h), key_colour, -1)
+        cv2.rectangle(frame, (lane_x, key_top), (lane_x + lane_w, key_top + key_h), border_colour, max(1, int(ui_scale)), cv2.LINE_AA)
+        draw_ui_text(
+            frame,
+            str(lane + 1),
+            (lane_x + lane_w // 2, key_top + key_h - int(5 * ui_scale)),
+            0.32 * ui_scale,
+            (235, 235, 230),
+            1,
+            "center",
+        )
+
+        press_start = bisect_left(times, map_time - window_ms)
+        presses = sum(1 for state in states[press_start:end_i] if state)
+        bpm = min(999, int(round(presses * 60000 / window_ms)))
+        draw_ui_text(
+            frame,
+            f"{bpm:03d}",
+            (lane_x + lane_w // 2, key_top + key_h + int(17 * ui_scale)),
+            0.32 * ui_scale,
+            (205, 205, 210),
+            1,
+            "center",
+        )
+
+    return key_top + key_h + int(30 * ui_scale)
 
 
 def draw_star_rating(frame, star_rating, height):
@@ -1290,8 +1331,11 @@ def frame_worker(frame_id):
     mirror = CTX["mirror"]
     skin = CTX["skin"]
     judgements = CTX["judgements"]
+    display_judgements = CTX.get("display_judgements", judgements)
+    judgement_times = CTX.get("judgement_times") or [j.get("display_time", j["time"]) for j in display_judgements]
     events = CTX["events"]
     event_lanes = CTX.get("event_lanes", [])
+    ln_hold_lanes = CTX.get("ln_hold_lanes", [])
     note_times = CTX.get("note_times", [])
     judgement_lookup = CTX.get("judgement_lookup", {})
     star_rating = CTX.get("star_rating")
@@ -1429,6 +1473,17 @@ def frame_worker(frame_id):
     start_i = max(0, bisect_left(note_times, visible_start) - 128) if note_times else 0
     active_ln_hold = False
 
+    for lane, lane_holds in enumerate(ln_hold_lanes):
+        if lane >= len(pressed) or not pressed[lane] or not lane_holds[0]:
+            continue
+
+        hold_starts, hold_ends = lane_holds
+        hold_i = bisect_right(hold_starts, map_time) - 1
+
+        if hold_i >= 0 and map_time < hold_ends[hold_i]:
+            active_ln_hold = True
+            break
+
     for note in notes[start_i:]:
         note_time = note["time"]
         end_time = note["end_time"] if note["end_time"] is not None else note_time
@@ -1555,7 +1610,7 @@ def frame_worker(frame_id):
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
 
     apply_vignette(frame, vignette_mask)
-    draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths)
+    draw_hit_judgements(frame, skin, display_judgements, judgement_times, map_time, lane_xs, column_widths, judge_y, note_widths)
 
     if combo > 0:
         combo_center_y = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
@@ -1605,7 +1660,14 @@ def frame_worker(frame_id):
             stats_y + int(10 * ui_scale),
             star_rating,
         )
-        stats_y = draw_key_bpms(frame, event_lanes, map_time, width, stats_y + int(8 * ui_scale))
+        stats_y = draw_key_input_overlay(
+            frame,
+            event_lanes,
+            pressed,
+            map_time,
+            width,
+            stats_y + int(8 * ui_scale),
+        )
         draw_timeline(
             frame,
             map_time,
@@ -1964,6 +2026,32 @@ def render_video(
         (j["lane"], j["kind"], j["time"]): j
         for j in judgements
     }
+    ln_hold_lanes = []
+
+    for lane in range(beatmap.keys):
+        lane_holds = []
+
+        for note in notes:
+            if note["end_time"] is None:
+                continue
+
+            render_lane = beatmap.keys - 1 - note["lane"] if mirror else note["lane"]
+
+            if render_lane != lane:
+                continue
+
+            head = judgement_lookup.get((lane, "ln_head", note["time"]))
+
+            if head is not None and head["value"] > 0:
+                lane_holds.append((head.get("display_time", head["time"]), note["end_time"]))
+
+        lane_holds.sort()
+        ln_hold_lanes.append((
+            [start for start, _ in lane_holds],
+            [end for _, end in lane_holds],
+        ))
+
+    display_judgements = sorted(judgements, key=lambda j: j.get("display_time", j["time"]))
 
     ctx = {
         "width": width,
@@ -1986,8 +2074,11 @@ def render_video(
         "mirror": mirror,
         "skin": skin,
         "judgements": judgements,
+        "display_judgements": display_judgements,
+        "judgement_times": [j.get("display_time", j["time"]) for j in display_judgements],
         "events": events,
         "event_lanes": event_lanes,
+        "ln_hold_lanes": ln_hold_lanes,
         "note_times": [note["time"] for note in notes],
         "judgement_lookup": judgement_lookup,
         "star_rating": star_rating,

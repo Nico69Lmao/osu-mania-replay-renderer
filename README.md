@@ -8,9 +8,10 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Parses legacy mania sections from `skin.ini`, including column geometry, hit position, notes, receptors, long-note parts, stage assets, and hit images.
 - Renders long-note heads, bodies, tails, held states, and release judgements.
 - Uses OD-dependent osu!mania hit windows and reconciles final judgement totals with the authoritative counts stored in the OSR replay.
-- Displays combo, accuracy, judgement totals, star rating, estimated pp, per-key BPM, and a circular song timer.
+- Displays combo, accuracy, judgement totals, star rating, estimated pp, a four-lane input/BPM visualizer, and a circular song timer.
 - Draws the gameplay combo with the selected skin's `ComboPrefix`, `ComboOverlap`, and mania `ComboPosition`, while keeping the optional side overlay.
 - Uses double-density combo glyphs correctly, reproduces the native increment animation, and can tint the combo from the configured mania `Hit300` artwork while a long note is held.
+- Keeps only the latest gameplay judgement visible without animation; a new result replaces it immediately and inactivity clears it after one second.
 - Shows a compact results header with the map title, mapper, player, and active mods.
 - Draws a compact strain profile with completed sections in green and upcoming sections in grey.
 - Supports DT, NC, and HT timing. NC also applies raised audio pitch.
