@@ -1,0 +1,25 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "osu-mania-replay-renderer"
+version = "0.1.0"
+description = "A local osu!mania replay renderer written in Python"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "numpy",
+    "opencv-python",
+    "osrparse",
+    "PySide6",
+]
+
+[project.scripts]
+mania-renderer = "osu_mania_replay_renderer.__main__:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/osu_mania_replay_renderer"]
+
+[tool.uv]
+package = true

@@ -20,16 +20,16 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 
 | File | Purpose |
 | --- | --- |
-| `main.py` | Application entry point. Initializes multiprocessing support, creates the PySide6 application, and opens the main window. |
-| `gui.py` | Defines the desktop interface and background render thread. Handles osu! folder, replay, beatmap, skin, resolution, scroll speed, motion blur, output selection, and progress updates. |
-| `renderer.py` | Core rendering engine. Calculates judgements, reconciles replay totals, draws gameplay and results frames, builds the strain graph, computes displayed pp, runs multiprocessing workers, invokes FFmpeg, and writes debug reports. |
-| `beatmap_parser.py` | Parses `.osu` metadata, audio and background paths, mode, key count, OD, normal notes, and long notes. Also computes the beatmap MD5 used for database lookup. |
-| `replay_parser.py` | Converts OSR replay frames into timestamped press and release events for each mania lane. |
-| `osu_finder.py` | Loads OSR files, decodes enabled mods, finds matching beatmaps by MD5, lists installed skins, and calculates the official aggregate mania accuracy stored by the replay. |
-| `skin_loader.py` | Parses the matching `[Mania]` block from `skin.ini`, resolves case-insensitive Windows-style asset paths on Linux, and loads gameplay, stage, judgement, and ranking assets with `@2x` density information. |
-| `osu_db_reader.py` | Reads cached osu!mania star ratings from the local `osu!.db`, matching the beatmap hash and replay mod combination. |
-| `settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
-| `requirements.txt` | Python runtime dependencies. |
+| `src/osu_mania_replay_renderer/__main__.py` | Package entry point. Initializes multiprocessing support, creates the PySide6 application, and opens the main window. |
+| `src/osu_mania_replay_renderer/gui.py` | Defines the desktop interface and background render thread. Handles osu! folder, replay, beatmap, skin, resolution, scroll speed, motion blur, output selection, and progress updates. |
+| `src/osu_mania_replay_renderer/renderer.py` | Core rendering engine. Calculates judgements, reconciles replay totals, draws gameplay and results frames, builds the strain graph, computes displayed pp, runs multiprocessing workers, invokes FFmpeg, and writes debug reports. |
+| `src/osu_mania_replay_renderer/beatmap_parser.py` | Parses `.osu` metadata, audio and background paths, mode, key count, OD, normal notes, and long notes. Also computes the beatmap MD5 used for database lookup. |
+| `src/osu_mania_replay_renderer/replay_parser.py` | Converts OSR replay frames into timestamped press and release events for each mania lane. |
+| `src/osu_mania_replay_renderer/osu_finder.py` | Loads OSR files, decodes enabled mods, finds matching beatmaps by MD5, lists installed skins, and calculates the official aggregate mania accuracy stored by the replay. |
+| `src/osu_mania_replay_renderer/skin_loader.py` | Parses the matching `[Mania]` block from `skin.ini`, resolves case-insensitive Windows-style asset paths on Linux, and loads gameplay, stage, judgement, and ranking assets with `@2x` density information. |
+| `src/osu_mania_replay_renderer/osu_db_reader.py` | Reads cached osu!mania star ratings from the local `osu!.db`, matching the beatmap hash and replay mod combination. |
+| `src/osu_mania_replay_renderer/settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
+| `pyproject.toml` | Project metadata, dependencies, and `uv` configuration. |
 | `.gitignore` | Excludes virtual environments, caches, rendered videos, replays, beatmaps, debug output, and temporary render data from Git. |
 | `README.md` | Project documentation. |
 
@@ -47,17 +47,22 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 
 ## Installation
 
-Python 3.11 or newer and FFmpeg are recommended.
+Python 3.11 or newer, `uv`, and FFmpeg are recommended.
 
 ```bash
-python -m venv venv
-./venv/bin/pip install -r requirements.txt
+uv sync
 ```
 
 Run the application with:
 
 ```bash
-./venv/bin/python main.py
+uv run mania-renderer
+```
+
+You can also run the package entry module directly:
+
+```bash
+uv run python -m osu_mania_replay_renderer
 ```
 
 ## Basic Usage

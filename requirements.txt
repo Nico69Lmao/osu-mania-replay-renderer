@@ -1,4 +1,0 @@
-opencv-python
-numpy
-PySide6
-osrparse

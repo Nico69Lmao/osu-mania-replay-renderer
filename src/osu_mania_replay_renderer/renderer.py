@@ -10,11 +10,11 @@ import os
 import time
 import json
 
-from beatmap_parser import parse_osu
-from osu_finder import get_mod_settings, get_stable_mania_accuracy, get_replay
-from skin_loader import load_mania_skin
-from replay_parser import get_replay_events
-from osu_db_reader import read_mania_star_rating
+from osu_mania_replay_renderer.beatmap_parser import parse_osu
+from osu_mania_replay_renderer.osu_finder import get_mod_settings, get_stable_mania_accuracy, get_replay
+from osu_mania_replay_renderer.skin_loader import load_mania_skin
+from osu_mania_replay_renderer.replay_parser import get_replay_events
+from osu_mania_replay_renderer.osu_db_reader import read_mania_star_rating
 
 CTX = {}
 MANIA_MAX_TIME_RANGE_MS = 11485.0
