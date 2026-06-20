@@ -338,26 +338,71 @@ class MainWindow(QMainWindow):
 
         self.skin_combo.blockSignals(False)
 
+    def _native_dialog_directory(self, path):
+        directory = Path(path).expanduser()
+        return str(directory if directory.exists() else Path.home())
+
+    def _get_existing_directory(self, title, start_dir):
+        dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir))
+        dialog.setFileMode(QFileDialog.Directory)
+        dialog.setOption(QFileDialog.ShowDirsOnly, True)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+
+        if not dialog.exec():
+            return ""
+
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else ""
+
+    def _get_open_file_name(self, title, start_dir, file_filter):
+        dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir), file_filter)
+        dialog.setFileMode(QFileDialog.ExistingFile)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+
+        if not dialog.exec():
+            return ""
+
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else ""
+
+    def _get_save_file_name(self, title, start_path, file_filter):
+        dialog = QFileDialog(self, title, self._native_dialog_directory(Path(start_path).parent), file_filter)
+        dialog.selectFile(str(start_path))
+        dialog.setAcceptMode(QFileDialog.AcceptSave)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+
+        if not dialog.exec():
+            return ""
+
+        selected = dialog.selectedFiles()
+        return selected[0] if selected else ""
+
     def select_osu_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select osu! folder", self.osu_folder or str(Path.home()))
+        folder = self._get_existing_directory("Select osu! folder", self.osu_folder or Path.home())
 
         if not folder:
             return
 
         self.osu_folder = folder
+        self.settings["osu_folder"] = folder
         update_setting("osu_folder", folder)
         self.osu_label.setText(folder)
         self.load_saved_skins()
         self.try_auto_find_beatmap()
 
     def select_replay(self):
-        start_dir = str(Path(self.replay_file).parent) if self.replay_file else str(Path.home())
-        file, _ = QFileDialog.getOpenFileName(self, "Select replay", start_dir, "osu! replay (*.osr)")
+        start_dir = (
+            Path(self.osu_folder) / "Replays"
+            if self.osu_folder
+            else Path(self.replay_file).parent if self.replay_file else Path.home()
+        )
+        file = self._get_open_file_name("Select replay", start_dir, "osu! replay (*.osr)")
 
         if not file:
             return
 
         self.replay_file = file
+        self.settings["last_replay"] = file
         update_setting("last_replay", file)
         self.replay_label.setText(file)
         self.load_replay_info()
@@ -390,8 +435,12 @@ class MainWindow(QMainWindow):
             self.beatmap_label.setText("Beatmap not found")
 
     def select_manual_beatmap(self):
-        start_dir = str(Path(self.beatmap_file).parent) if self.beatmap_file else str(Path.home())
-        file, _ = QFileDialog.getOpenFileName(self, "Select beatmap", start_dir, "osu! beatmap (*.osu)")
+        start_dir = (
+            Path(self.beatmap_file).parent
+            if self.beatmap_file
+            else Path(self.osu_folder) / "Songs" if self.osu_folder else Path.home()
+        )
+        file = self._get_open_file_name("Select beatmap", start_dir, "osu! beatmap (*.osu)")
 
         if not file:
             return
@@ -430,10 +479,9 @@ class MainWindow(QMainWindow):
             return
 
         output_start = self.settings.get("last_output_folder") or str(Path.home())
-        output_file, _ = QFileDialog.getSaveFileName(
-            self,
+        output_file = self._get_save_file_name(
             "Save rendered video",
-            str(Path(output_start) / "render.mp4"),
+            Path(output_start) / "render.mp4",
             "MP4 video (*.mp4)",
         )
 
