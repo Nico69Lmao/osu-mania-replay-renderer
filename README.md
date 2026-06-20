@@ -1,101 +1,105 @@
-# osu!mania Local Renderer
+# osu!mania Replay Renderer
 
-Renderer locale per replay osu!mania. Legge una beatmap `.osu`, un replay `.osr` e una skin mania, poi genera un video MP4 con note, long notes, receptor, judgement, counter e audio sincronizzato.
+A local osu!mania replay renderer written in Python. It reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then produces a synchronized MP4 video with skinned notes, long notes, receptors, judgements, statistics, audio, and a results screen.
 
-## Funzioni principali
+## Features
 
-- Rendering osu!mania 4K e altre key count lette dal file `.osu`.
-- Skin mania da `skin.ini`:
-  - `ColumnWidth`, `ColumnSpacing`, `HitPosition`, `ScorePosition`, `ComboPosition`
-  - `KeyImage`, `KeyImageD`
-  - `NoteImage`, `NoteImageH`, `NoteImageL`, `NoteImageT`
-  - `Hit0`, `Hit50`, `Hit100`, `Hit200`, `Hit300`, `Hit300g`
-  - stage/lane cover se l'asset esiste e ha alpha visibile
-- Long notes con body, head tenuta durante l'hold e release judgement.
-- Accuracy dinamica basata su OD e riconciliata con i conteggi ufficiali salvati nel replay OSR.
-- Counter per judgement: `300g`, `300`, `200`, `100`, `50`, `Miss`.
-- BPM dinamici per ciascun tasto, calcolati sulle pressioni degli ultimi due secondi.
-- Grafico di difficolta durante la play: sezione trascorsa verde, sezione futura grigia.
-- Schermata risultati finale basata sugli asset `ranking-panel` e `ranking-{rank}` della skin, con rank, judgement, combo, accuracy, score e pp.
-- Layout risultati legacy v2.0+ su spazio logico `1024x768`: `ranking-panel` a `(0,102)`, rank a 192px dal bordo destro e `y=320`, max combo `(8,480)`, accuracy `(291,480)`, graph `(256,608)` e perfect `(416,688)`.
-- Background della beatmap oscurato sotto il pannello risultati; nessun pulsante Back/replay/retry o Online Ranking viene renderizzato.
-- I judgement della schermata risultati seguono la gerarchia mania ufficiale: `hit*-0` nella root della skin, poi `hit*` statico.
-- PP counter con formula ufficiale osu!mania quando e disponibile una star rating; altrimenti mostra `pp: N/A`.
-- Star rating letta dalla cache `osu!.db` quando disponibile, scegliendo la voce mania per i mod del replay.
-- Indicatore temporale circolare grigio sotto le statistiche a destra.
-- Supporto mod speed:
-  - DT: video e audio a `1.5x`
-  - NC: video a `1.5x`, audio con pitch alto tramite `asetrate`
-  - HT: video e audio a `0.75x`
-- Scroll speed basata sul sorgente ufficiale ppy/osu:
-  - `scroll_time_ms = 11485 / scroll_speed`
-  - clamp minimo `290ms`, range GUI `1..40`
-- Motion blur opzionale sul playfield.
-- Encoding video con accelerazione hardware automatica:
-  - VAAPI, utile per Intel/AMD su Linux
-  - Intel QSV
-  - AMD AMF
-  - fallback CPU `libx264`
+- Supports native osu!mania beatmaps with key counts read from the `.osu` file.
+- Parses legacy mania sections from `skin.ini`, including column geometry, hit position, notes, receptors, long-note parts, stage assets, and hit images.
+- Renders long-note heads, bodies, tails, held states, and release judgements.
+- Uses OD-dependent osu!mania hit windows and reconciles final judgement totals with the authoritative counts stored in the OSR replay.
+- Displays combo, accuracy, judgement totals, star rating, estimated pp, per-key BPM, and a circular song timer.
+- Draws a compact strain profile with completed sections in green and upcoming sections in grey.
+- Supports DT, NC, and HT timing. NC also applies raised audio pitch.
+- Includes optional vertical motion blur.
+- Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
+- Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
+- Generates frames in parallel and stores temporary frames as quality-98 JPEG files for faster disk I/O.
 
-## Come funziona il rendering
+## Project Files
 
-1. `beatmap_parser.py` legge metadata, audio, key count, OD e hitobjects dalla beatmap.
-2. `replay_parser.py` legge gli input del replay e li converte in eventi press/release per lane.
-3. `skin_loader.py` legge il blocco `[Mania]` corretto dal `skin.ini` selezionato e carica le immagini della skin.
-4. `renderer.py` calcola i judgement:
-   - le finestre mania native usano OD: `300 = 64 - 3*OD`, `200 = 97 - 3*OD`, ecc.
-   - le LN usano head/release per visual, ma il risultato che conta viene risolto al release.
-   - i timing ordinano i risultati per nota, mentre `count_geki`, `count_300`, `count_katu`, `count_100`, `count_50` e `count_miss` dell'OSR garantiscono conteggi finali identici a osu!stable.
-5. Ogni frame viene generato in parallelo:
-   - calcolo `map_time`
-   - note visibili tramite binary search
-   - eventi press/release indicizzati per lane
-   - rendering playfield, note, LN, cover, receptor, UI
-   - frame temporanei JPEG quality 98 per ridurre il tempo di scrittura e lo spazio su disco
-6. FFmpeg crea un video temporaneo e poi aggiunge l'audio con il filtro corretto per DT/NC/HT.
+| File | Purpose |
+| --- | --- |
+| `main.py` | Application entry point. Initializes multiprocessing support, creates the PySide6 application, and opens the main window. |
+| `gui.py` | Defines the desktop interface and background render thread. Handles osu! folder, replay, beatmap, skin, resolution, scroll speed, motion blur, output selection, and progress updates. |
+| `renderer.py` | Core rendering engine. Calculates judgements, reconciles replay totals, draws gameplay and results frames, builds the strain graph, computes displayed pp, runs multiprocessing workers, invokes FFmpeg, and writes debug reports. |
+| `beatmap_parser.py` | Parses `.osu` metadata, audio and background paths, mode, key count, OD, normal notes, and long notes. Also computes the beatmap MD5 used for database lookup. |
+| `replay_parser.py` | Converts OSR replay frames into timestamped press and release events for each mania lane. |
+| `osu_finder.py` | Loads OSR files, decodes enabled mods, finds matching beatmaps by MD5, lists installed skins, and calculates the official aggregate mania accuracy stored by the replay. |
+| `skin_loader.py` | Parses the matching `[Mania]` block from `skin.ini`, resolves case-insensitive Windows-style asset paths on Linux, and loads gameplay, stage, judgement, and ranking assets with `@2x` density information. |
+| `osu_db_reader.py` | Reads cached osu!mania star ratings from the local `osu!.db`, matching the beatmap hash and replay mod combination. |
+| `settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
+| `requirements.txt` | Python runtime dependencies. |
+| `.gitignore` | Excludes virtual environments, caches, rendered videos, replays, beatmaps, debug output, and temporary render data from Git. |
+| `README.md` | Project documentation. |
 
-## Avvio
+## Rendering Pipeline
+
+1. The GUI identifies the beatmap belonging to the selected replay by comparing MD5 hashes.
+2. `beatmap_parser.py` loads metadata, OD, lane count, hit objects, audio, and background artwork.
+3. `replay_parser.py` turns replay key states into per-lane input events.
+4. `skin_loader.py` loads the selected legacy skin and its matching mania configuration.
+5. `renderer.py` matches input events to notes using OD-dependent hit windows.
+6. The simulated final judgement totals are reconciled with `count_geki`, `count_300`, `count_katu`, `count_100`, `count_50`, and `count_miss` from the OSR file.
+7. Worker processes render frames in parallel. Visible notes and lane events are located with binary searches to avoid scanning the full map on every frame.
+8. FFmpeg encodes the frame sequence, applies the correct DT, NC, or HT audio filter, and muxes the final MP4.
+9. A `.debug.json` report is written beside the output video.
+
+## Installation
+
+Python 3.11 or newer and FFmpeg are recommended.
 
 ```bash
-python main.py
+python -m venv venv
+./venv/bin/pip install -r requirements.txt
 ```
 
-Se usi il virtualenv incluso:
+Run the application with:
 
 ```bash
 ./venv/bin/python main.py
 ```
 
-## Output debug
+## Basic Usage
 
-Per ogni render viene scritto anche un file `.debug.json` accanto al video. Contiene:
+1. Select the osu! installation folder containing `Songs`, `Skins`, and `osu!.db`.
+2. Select an `.osr` replay. The matching beatmap is searched automatically.
+3. Select the skin and rendering options.
+4. Choose an MP4 output path and start the render.
 
-- mods e speed multiplier
-- offset scelto
-- accuracy replay e simulata
-- OD e hit windows usate
-- scroll speed e travel time
-- encoder ffmpeg usato
-- esito ed errore di ogni tentativo VAAPI/QSV/AMF/libx264
-- conteggi judgement simulati e conferma della riconciliazione OSR
-- star rating letta da `osu!.db`
-- primi judgement non perfetti
+The renderer supports common output resolutions from `640x360` through `3840x2160`.
 
-## Accelerazione Intel su Arch/EndeavourOS
+## Skin Compatibility
 
-Per una Intel Iris Xe servono il driver VAAPI Intel e gli strumenti di verifica:
+The renderer reads the selected key-count block from `skin.ini`, including:
 
-```bash
-sudo pacman -S --needed intel-media-driver libva-utils
+- `ColumnWidth`, `ColumnSpacing`, `ColumnLineWidth`, and `HitPosition`
+- `KeyImage`, `KeyImageD`
+- `NoteImage`, `NoteImageH`, `NoteImageL`, `NoteImageT`
+- `Hit0`, `Hit50`, `Hit100`, `Hit200`, `Hit300`, `Hit300g`
+- `StageLeft`, `StageRight`, `StageBottom`, `StageLight`, and `StageHint`
+
+The results screen follows the documented legacy v2 layout in a logical `1024x768` coordinate space. It uses `ranking-panel`, `ranking-{grade}`, `ranking-maxcombo`, `ranking-accuracy`, `ranking-graph`, `ranking-perfect`, and `ranking-title` when provided. osu!mania result judgements follow the official root-folder hierarchy: `hit*-0` first, followed by the static `hit*` image.
+
+Navigation controls such as Back, retry, replay, and Online Ranking are intentionally not rendered.
+
+## Timing and Mods
+
+The visual scroll time follows osu!'s mania implementation:
+
+```text
+scroll_time_ms = max(290, 11485 / scroll_speed)
 ```
 
-Verifica il driver con `vainfo` e monitora l'encoding con `sudo intel_gpu_top`. Nel file `.debug.json`, `video_encoder` deve contenere `h264_vaapi`; se VAAPI fallisce, `video_encoder_attempts` conserva l'errore e il renderer passa automaticamente all'encoder successivo.
+- `DT`: video and audio at `1.5x`
+- `NC`: video at `1.5x`, audio accelerated with raised pitch
+- `HT`: video and audio at `0.75x`
 
-## Note sui PP
+## Accuracy and PP
 
-La formula pp mania ufficiale richiede la star rating della mappa. La star rating non e contenuta nel file `.osu`; il renderer prova a leggerla da `osu!.db`, dove osu!stable cache-a le star ratings per ruleset e combinazione mod. Se non viene trovata, il renderer non inventa pp e mostra `pp: N/A`.
+Native mania hit windows depend on beatmap OD. Replay timestamps are used to assign the most plausible result to each object, while the OSR judgement counters guarantee that final `300g`, `300`, `200`, `100`, `50`, and miss totals match the recorded play.
 
-Formula usata quando la SR e disponibile:
+Displayed pp uses the official osu!mania performance formula when a matching star rating is available in `osu!.db`:
 
 ```text
 pp = 8 * max(star_rating - 0.15, 0.05)^2.2
@@ -103,21 +107,47 @@ pp = 8 * max(star_rating - 0.15, 0.05)^2.2
      * (1 + 0.1 * min(1, total_hits / 1500))
 ```
 
-`custom_accuracy`:
+If no matching star rating is found, the renderer displays `pp: N/A` rather than inventing a value.
 
-```text
-(perfect*320 + great*300 + good*200 + ok*100 + meh*50) / (total_hits*320)
+## Hardware Encoding
+
+The encoder order is:
+
+1. H.264 VAAPI
+2. Intel H.264 QSV
+3. AMD H.264 AMF
+4. CPU `libx264`
+
+For Intel Iris Xe on Arch Linux or EndeavourOS:
+
+```bash
+sudo pacman -S --needed intel-media-driver libva-utils intel-gpu-tools
+vainfo --display drm --device /dev/dri/renderD128
+sudo intel_gpu_top
 ```
 
-## Fonti
+The selected encoder and every failed attempt are recorded in the debug report.
 
-- osu!mania scroll speed, `DrawableManiaRuleset.ComputeScrollTime()`
-  https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/UI/DrawableManiaRuleset.cs
-- legacy mania hit position conversion
-  https://github.com/ppy/osu/blob/master/osu.Game/Skinning/LegacyManiaSkinConfiguration.cs
-- coordinate e gerarchia degli elementi della ranking screen
-  https://osu.ppy.sh/wiki/en/Skinning/Interface#ranking-screen
-- gerarchia dei judgement nella ranking screen osu!mania
-  https://osu.ppy.sh/wiki/en/Skinning/FAQ#ranking-screen-hit-score-hierarchy
-- osu!mania performance calculator
-  https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/Difficulty/ManiaPerformanceCalculator.cs
+## Debug Report
+
+Each render creates `<video-name>.debug.json` containing:
+
+- Replay and output paths
+- Enabled mods and speed multiplier
+- Automatic timing offset
+- Recorded and simulated accuracy
+- Reconciled judgement totals
+- OD and hit windows
+- Scroll speed and note travel time
+- Star rating
+- Selected FFmpeg encoder
+- Errors from failed hardware encoder attempts
+- First non-perfect simulated judgements
+
+## Technical References
+
+- [osu!mania scroll-time implementation](https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/UI/DrawableManiaRuleset.cs)
+- [Legacy mania skin configuration](https://github.com/ppy/osu/blob/master/osu.Game/Skinning/LegacyManiaSkinConfiguration.cs)
+- [osu!mania performance calculator](https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/Difficulty/ManiaPerformanceCalculator.cs)
+- [Legacy ranking-screen skin elements](https://osu.ppy.sh/wiki/en/Skinning/Interface#ranking-screen)
+- [osu!mania ranking-screen hit hierarchy](https://osu.ppy.sh/wiki/en/Skinning/FAQ#ranking-screen-hit-score-hierarchy)
