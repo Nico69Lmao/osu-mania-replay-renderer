@@ -208,12 +208,15 @@ class MainWindow(QMainWindow):
         self.strain_graph_check.setChecked(setting_bool(self.settings.get("show_strain_graph", True)))
         self.results_screen_check = QCheckBox("Results screen")
         self.results_screen_check.setChecked(setting_bool(self.settings.get("show_results_screen", True)))
+        self.hold_combo_colour_check = QCheckBox("Colour combo during holds")
+        self.hold_combo_colour_check.setChecked(setting_bool(self.settings.get("colour_combo_during_holds", True)))
 
         effects = QVBoxLayout()
         effects.setSpacing(8)
         effects.addWidget(self.side_overlay_check)
         effects.addWidget(self.strain_graph_check)
         effects.addWidget(self.results_screen_check)
+        effects.addWidget(self.hold_combo_colour_check)
 
         layout.addRow("Resolution", self.resolution_combo)
         layout.addRow("Scroll speed", self.scroll_speed_spin)
@@ -411,6 +414,7 @@ class MainWindow(QMainWindow):
             "results_background_opacity": self.results_opacity_spin.value() / 100.0,
             "results_duration": self.results_duration_spin.value(),
             "show_results_screen": self.results_screen_check.isChecked(),
+            "colour_combo_during_holds": self.hold_combo_colour_check.isChecked(),
         }
 
     def _save_render_settings(self, options):
@@ -423,6 +427,7 @@ class MainWindow(QMainWindow):
         update_setting("results_background_opacity", str(int(options["results_background_opacity"] * 100)))
         update_setting("results_duration", str(options["results_duration"]))
         update_setting("show_results_screen", options["show_results_screen"])
+        update_setting("colour_combo_during_holds", options["colour_combo_during_holds"])
 
     def start_render(self):
         if not self.beatmap_file or not self.replay_file:

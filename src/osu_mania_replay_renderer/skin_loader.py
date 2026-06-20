@@ -104,6 +104,7 @@ def parse_skin_ini(skin_folder: Path, keys: int):
         "combo_overlap": 0,
         "score_prefix": "score",
         "score_overlap": 0,
+        "combo_colours": [],
         "column_start": None,
         "hit_position": None,
         "column_widths": None,
@@ -171,6 +172,15 @@ def parse_skin_ini(skin_folder: Path, keys: int):
                     except ValueError:
                         pass
 
+            if current_section == "Colours" and key.lower().startswith("combo"):
+                suffix = key[5:]
+
+                if suffix.isdigit():
+                    colour = parse_csv_ints(value)
+
+                    if len(colour) >= 3:
+                        cfg["combo_colours"].append((int(suffix), colour[:3]))
+
             if current_section != "Mania":
                 continue
 
@@ -191,6 +201,7 @@ def parse_skin_ini(skin_folder: Path, keys: int):
             pass
 
     if not block:
+        cfg["combo_colours"] = [colour for _, colour in sorted(cfg["combo_colours"])]
         return cfg
 
     def get_int(name):
@@ -211,6 +222,7 @@ def parse_skin_ini(skin_folder: Path, keys: int):
     cfg["keys_under_notes"] = block.get("KeysUnderNotes", "0") == "1"
     cfg["upside_down"] = block.get("UpsideDown", "0") == "1"
     cfg["judgement_line"] = block.get("JudgementLine", "1") != "0"
+    cfg["combo_colours"] = [colour for _, colour in sorted(cfg["combo_colours"])]
 
     for k, v in block.items():
         if k.startswith("Colour"):
@@ -283,6 +295,7 @@ def load_mania_skin(skin_folder: str | None, keys: int):
             "combo_overlap": 0,
             "score_prefix": "score",
             "score_overlap": 0,
+            "combo_colours": [],
             "hit_position": None,
             "column_widths": None,
             "column_spacing": [0] * (keys - 1),

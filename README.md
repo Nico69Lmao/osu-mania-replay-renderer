@@ -10,6 +10,8 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Uses OD-dependent osu!mania hit windows and reconciles final judgement totals with the authoritative counts stored in the OSR replay.
 - Displays combo, accuracy, judgement totals, star rating, estimated pp, per-key BPM, and a circular song timer.
 - Draws the gameplay combo with the selected skin's `ComboPrefix`, `ComboOverlap`, and mania `ComboPosition`, while keeping the optional side overlay.
+- Uses double-density combo glyphs correctly, reproduces the native increment animation, and can tint the combo from the configured mania `Hit300` artwork while a long note is held.
+- Shows a compact results header with the map title, mapper, player, and active mods.
 - Draws a compact strain profile with completed sections in green and upcoming sections in grey.
 - Supports DT, NC, and HT timing. NC also applies raised audio pitch.
 - Includes optional vertical motion blur.
@@ -87,7 +89,7 @@ The renderer reads the selected key-count block from `skin.ini`, including:
 - `StageLeft`, `StageRight`, `StageBottom`, `StageLight`, and `StageHint`
 - `ComboPrefix`, `ComboOverlap`, `ScorePrefix`, and `ScoreOverlap`
 
-The results screen follows the documented legacy v2 layout in a logical `1024x768` coordinate space. It uses `ranking-panel`, `ranking-{grade}`, `ranking-maxcombo`, `ranking-accuracy`, `ranking-graph`, `ranking-perfect`, and `ranking-title` when provided. osu!mania result judgements follow the official root-folder hierarchy: `hit*-0` first, followed by the static `hit*` image.
+The results screen follows the documented legacy v2 layout in a logical `1024x768` coordinate space. It uses `ranking-panel`, `ranking-{grade}`, `ranking-maxcombo`, `ranking-accuracy`, `ranking-graph`, `ranking-perfect`, and `ranking-title` when provided. Judgement counters use the selected mania block's `Hit300g`, `Hit300`, `Hit200`, `Hit100`, `Hit50`, and `Hit0` artwork so they match gameplay rather than the standard-mode hit bursts.
 
 Navigation controls such as Back, retry, replay, and Online Ranking are intentionally not rendered.
 

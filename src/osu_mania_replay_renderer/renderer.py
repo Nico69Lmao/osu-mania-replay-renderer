@@ -37,6 +37,25 @@ def draw_ui_text(frame, text, origin, scale=0.6, color=(235, 235, 235), thicknes
     cv2.putText(frame, text, (x, y), font, scale, color, thickness, line_type)
 
 
+def draw_song_header(frame, title, mapper, player, mods="", bar_height=None):
+    """Draw the compact black metadata strip used by legacy replay playback."""
+    height, width = frame.shape[:2]
+    ui_scale = max(0.75, height / 1080.0)
+    bar_height = int(bar_height) if bar_height is not None else max(42, int(58 * ui_scale))
+    cv2.rectangle(frame, (0, 0), (width, bar_height), (0, 0, 0), -1)
+
+    max_title_chars = max(24, int(width / max(7, 8 * ui_scale)))
+    display_title = title if len(title) <= max_title_chars else title[:max_title_chars - 3] + "..."
+    draw_ui_text(frame, display_title, (int(12 * ui_scale), int(23 * ui_scale)), 0.48 * ui_scale, (246, 246, 248), 1)
+
+    details = f"Beatmap by {mapper}  |  Played by {player}"
+
+    if mods:
+        details += f"  |  {mods}"
+
+    draw_ui_text(frame, details, (int(12 * ui_scale), int(46 * ui_scale)), 0.36 * ui_scale, (190, 194, 202), 1)
+
+
 def format_clock(milliseconds):
     seconds = max(0, int(milliseconds // 1000))
     minutes, seconds = divmod(seconds, 60)
@@ -146,6 +165,29 @@ def has_visible_alpha(img):
     return bool(np.any(img[:, :, 3] > 8))
 
 
+def has_meaningful_visible_alpha(img):
+    if not has_visible_alpha(img):
+        return False
+
+    if img.ndim < 3 or img.shape[2] < 4:
+        return True
+
+    visible_pixels = int(np.count_nonzero(img[:, :, 3] > 8))
+    return visible_pixels >= max(4, int(img.shape[0] * img.shape[1] * 0.002))
+
+
+def dominant_visible_colour(img):
+    if not has_meaningful_visible_alpha(img):
+        return None
+
+    if img.ndim < 3 or img.shape[2] < 3:
+        return None
+
+    mask = img[:, :, 3] > 16 if img.shape[2] == 4 else np.ones(img.shape[:2], dtype=bool)
+    bgr = np.mean(img[:, :, :3][mask], axis=0)
+    return int(bgr[2]), int(bgr[1]), int(bgr[0])
+
+
 def paste_rgba_centered_sized(frame, img, cx, cy, width, height, crop_alpha=False):
     if img is None:
         return
@@ -174,7 +216,9 @@ def select_skin_glyph(variants, height):
     if not usable:
         return None, 1.0
 
-    preferred_density = 2.0 if height >= 800 and 2.0 in usable else 1.0
+    # @2x is a density marker, not a resolution threshold. osu! prefers the
+    # sharpest source and converts it back to legacy logical coordinates.
+    preferred_density = max(usable)
     image = usable.get(preferred_density)
 
     if image is None:
@@ -183,7 +227,19 @@ def select_skin_glyph(variants, height):
     return image, preferred_density
 
 
-def draw_skin_text(frame, text, glyphs, center_x, top_y, overlap, coordinate_scale):
+def draw_skin_text(
+    frame,
+    text,
+    glyphs,
+    center_x,
+    y,
+    overlap,
+    coordinate_scale,
+    vertical_anchor="top",
+    vertical_scale=1.0,
+    alpha=1.0,
+    tint=None,
+):
     selected = []
 
     for character in str(text):
@@ -193,7 +249,11 @@ def draw_skin_text(frame, text, glyphs, center_x, top_y, overlap, coordinate_sca
             return False
 
         scale = coordinate_scale / density
-        selected.append((image, max(1, int(image.shape[1] * scale)), max(1, int(image.shape[0] * scale))))
+        selected.append((
+            image,
+            max(1, int(image.shape[1] * scale)),
+            max(1, int(image.shape[0] * scale * vertical_scale)),
+        ))
 
     if not selected:
         return False
@@ -201,9 +261,24 @@ def draw_skin_text(frame, text, glyphs, center_x, top_y, overlap, coordinate_sca
     overlap_px = int(overlap * coordinate_scale)
     total_width = sum(width for _, width, _ in selected) - overlap_px * max(0, len(selected) - 1)
     x = int(center_x - total_width / 2)
+    max_height = max(height for _, _, height in selected)
+    top_y = int(y - max_height / 2) if vertical_anchor == "center" else int(y)
 
     for image, width, height in selected:
-        paste_rgba(frame, image, x, int(top_y), width, height)
+        draw_image = image
+
+        if alpha < 0.999 or tint is not None:
+            draw_image = image.copy()
+
+            if tint is not None and draw_image.ndim == 3 and draw_image.shape[2] >= 3:
+                target = np.array((tint[2], tint[1], tint[0]), dtype=np.float32) / 255.0
+                draw_image[:, :, :3] = np.clip(draw_image[:, :, :3].astype(np.float32) * target, 0, 255).astype(np.uint8)
+
+            if draw_image.ndim == 3 and draw_image.shape[2] == 4:
+                draw_image[:, :, 3] = np.clip(draw_image[:, :, 3].astype(np.float32) * alpha, 0, 255).astype(np.uint8)
+
+        glyph_y = top_y + (max_height - height) // 2
+        paste_rgba(frame, draw_image, x, glyph_y, width, height)
         x += width - overlap_px
 
     return True
@@ -711,13 +786,13 @@ def draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_width
     play_center_x = (lane_xs[0] + lane_xs[-1] + column_widths[-1]) // 2
     cfg = skin.get("cfg", {})
     skin_scale = frame.shape[0] / 480
-    judgement_y = int((cfg.get("combo_position") or 130) * skin_scale)
+    judgement_y = int((cfg.get("score_position") if cfg.get("score_position") is not None else 300) * skin_scale)
 
     for judgement in judgements:
         display_time = judgement.get("display_time", judgement["time"])
         age = map_time - display_time
 
-        if age < 0 or age > 450:
+        if age < 0 or age > 220:
             continue
 
         value = judgement["value"]
@@ -727,14 +802,38 @@ def draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_width
         if img is None:
             continue
 
-        alpha_scale = max(0.0, 1.0 - age / 450)
+        if age < 20:
+            alpha_scale = age / 20.0
+        elif age <= 180:
+            alpha_scale = 1.0
+        else:
+            alpha_scale = max(0.0, 1.0 - (age - 180) / 40.0)
+
+        if value == 0:
+            image_scale = 1.2 - 0.2 * min(1.0, age / 100.0)
+        elif age < 40:
+            image_scale = 0.8 + 0.2 * (age / 40.0)
+        elif age < 80:
+            image_scale = 1.0 - 0.3 * ((age - 40.0) / 40.0)
+        elif age < 180:
+            image_scale = 0.7
+        else:
+            image_scale = 0.7 - 0.3 * ((age - 180.0) / 40.0)
+
         draw_img = img.copy()
 
         if len(draw_img.shape) == 3 and draw_img.shape[2] == 4:
             draw_img[:, :, 3] = (draw_img[:, :, 3].astype(np.float32) * alpha_scale).astype(np.uint8)
 
-        y = judgement_y - int(age * 0.04)
-        paste_rgba_centered(frame, draw_img, play_center_x, y, scale=1.0, max_width=180)
+        max_width = max(1, int(180 * skin_scale * image_scale))
+        paste_rgba_centered(
+            frame,
+            draw_img,
+            play_center_x,
+            judgement_y,
+            scale=skin_scale * image_scale,
+            max_width=max_width,
+        )
 
 
 def draw_judgement_counter(frame, judgements, map_time, width, top_y):
@@ -922,8 +1021,8 @@ def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width,
 
     ui_scale = overlay_scale(height)
     x2 = width - int(205 * ui_scale)
-    x1 = x2 - int(260 * ui_scale)
-    graph_h = max(14, int(24 * ui_scale))
+    x1 = x2 - int(320 * ui_scale)
+    graph_h = max(26, int(44 * ui_scale))
     y2 = height - int(14 * ui_scale)
     y1 = y2 - graph_h
 
@@ -1014,7 +1113,22 @@ def prepare_results_background(image, width, height, opacity=0.62):
     return np.clip(cropped.astype(np.float32) * opacity, 0, 255).astype(np.uint8)
 
 
-def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, pp, rank, perfect=False, background=None):
+def draw_results_screen(
+    frame,
+    skin,
+    title,
+    mapper,
+    player,
+    mods,
+    counts,
+    accuracy,
+    max_combo,
+    score,
+    pp,
+    rank,
+    perfect=False,
+    background=None,
+):
     height, width = frame.shape[:2]
     interface_scale = height / 768
     skin_version = skin.get("cfg", {}).get("skin_version", 1.0)
@@ -1026,8 +1140,10 @@ def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, 
     else:
         frame[:] = (24, 27, 36)
 
+    panel_y = (102 if is_v2 else 74) * interface_scale
+    draw_song_header(frame, title, mapper, player, mods, panel_y)
+
     if panel is not None:
-        panel_y = (102 if is_v2 else 74) * interface_scale
         paste_legacy_ranking_asset(
             frame,
             panel,
@@ -1089,8 +1205,6 @@ def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, 
     )
 
     text_scale = max(0.55, interface_scale)
-    display_title = title if len(title) <= 82 else title[:79] + "..."
-    draw_ui_text(frame, display_title, (int(5 * interface_scale), int(28 * interface_scale)), 0.58 * text_scale, (240, 245, 250), 1)
 
     rows = [
         (("300g", counts.get("300g", 0)), ("300", counts.get("300", 0))),
@@ -1098,28 +1212,24 @@ def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, 
         (("50", counts.get("50", 0)), ("Miss", counts.get("0", 0))),
     ]
     row_ys = (274, 368, 462)
-    ranking_hits = skin.get("ranking_hit_images", {})
+    mania_hits = skin.get("hit_images", {})
     score_glyphs = skin.get("score_glyphs", {})
     score_overlap = skin.get("cfg", {}).get("score_overlap", 0)
 
     for row_y, row in zip(row_ys, rows):
         for label_x, value_x, (label, value) in zip((21, 340), (204, 522), row):
-            variants = ranking_hits.get(label, {})
-            preferred_density = 2.0 if height >= 800 and 2.0 in variants else 1.0
-            hit_image = variants.get(preferred_density)
+            image_key = "0" if label == "Miss" else label
+            hit_image = mania_hits.get(image_key)
 
-            if hit_image is None and variants:
-                preferred_density, hit_image = next(iter(variants.items()))
-
-            if hit_image is not None:
+            if has_meaningful_visible_alpha(hit_image):
                 paste_legacy_ranking_asset(
                     frame,
                     hit_image,
-                    preferred_density,
+                    1.0,
                     label_x * interface_scale,
                     (row_y - 34) * interface_scale,
                 )
-            elif not variants:
+            else:
                 draw_ui_text(frame, label, (int(label_x * interface_scale), int(row_y * interface_scale)), 0.54 * text_scale, (185, 210, 235), 1)
 
             value_center_x = value_x - 34
@@ -1170,6 +1280,9 @@ def frame_worker(frame_id):
     notes = CTX["notes"]
     keys = CTX["keys"]
     title = CTX["title"]
+    mapper = CTX.get("mapper", "Unknown")
+    player = CTX.get("player", "Unknown")
+    mods = CTX.get("mods", "")
     output_dir = CTX["output_dir"]
     scroll_time_ms = CTX["scroll_time_ms"]
     motion_blur = CTX.get("motion_blur", 0)
@@ -1185,6 +1298,7 @@ def frame_worker(frame_id):
     difficulty_profile = CTX.get("difficulty_profile", [])
     show_side_overlay = CTX.get("show_side_overlay", True)
     show_strain_graph = CTX.get("show_strain_graph", True)
+    colour_combo_during_holds = CTX.get("colour_combo_during_holds", True)
     vignette_mask = CTX.get("vignette_mask")
 
     real_elapsed = int(frame_id * 1000 / fps)
@@ -1198,6 +1312,9 @@ def frame_worker(frame_id):
             frame,
             skin,
             title,
+            mapper,
+            player,
+            mods,
             CTX.get("final_counts", {}),
             CTX.get("final_accuracy", 100.0),
             CTX.get("replay_max_combo", 0),
@@ -1225,7 +1342,7 @@ def frame_worker(frame_id):
     play_width = sum(column_widths) + sum(column_spacing)
 
     if cfg["column_start"] is not None:
-        play_x = int((width - play_width) / 2)
+        play_x = int(cfg["column_start"] * scale_x)
     else:
         play_x = (width - play_width) // 2
 
@@ -1263,18 +1380,9 @@ def frame_worker(frame_id):
         fill_rgba_rect(frame, lane_xs[lane], top_y, lane_xs[lane] + column_widths[lane], height, colour)
 
     ui_scale = overlay_scale(height)
-    title_limit = max(24, int((width * 0.42) / max(1, 7 * 0.42 * ui_scale)))
-    display_title = title if len(title) <= title_limit else title[:max(1, title_limit - 3)] + "..."
-    draw_ui_text(
-        frame,
-        display_title,
-        (int(22 * ui_scale), int(30 * ui_scale)),
-        0.42 * ui_scale,
-        (210, 210, 215),
-    )
-
     combo = 0
     accuracy = 100.0
+    combo_changed_at = None
 
     for j in judgements:
         if not j.get("counts_accuracy", True):
@@ -1283,6 +1391,8 @@ def frame_worker(frame_id):
         display_time = j.get("display_time", j["time"])
 
         if display_time <= map_time:
+            if j["combo"] != combo:
+                combo_changed_at = display_time
             combo = j["combo"]
             accuracy = j["accuracy"]
         else:
@@ -1317,6 +1427,7 @@ def frame_worker(frame_id):
     draw_stage_lights(frame, skin, pressed, lane_xs, column_widths, height, cfg, skin_scale)
 
     start_i = max(0, bisect_left(note_times, visible_start) - 128) if note_times else 0
+    active_ln_hold = False
 
     for note in notes[start_i:]:
         note_time = note["time"]
@@ -1382,6 +1493,9 @@ def frame_worker(frame_id):
                     head_display_time = head_judgement.get("display_time", head_judgement["time"]) if head_judgement else note_time
                     head_hit = head_judgement is not None and head_judgement["value"] > 0
 
+                    if head_hit and head_display_time <= map_time < tail_display_time and pressed[lane]:
+                        active_ln_hold = True
+
                     if map_time < head_display_time:
                         paste_rgba_centered(frame, head_img, center_x, y_head, scale=skin_scale, max_width=note_w)
                     elif head_hit and map_time < tail_display_time:
@@ -1444,24 +1558,40 @@ def frame_worker(frame_id):
     draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths)
 
     if combo > 0:
-        combo_top = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
+        combo_center_y = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
         play_center_x = play_x + play_width // 2
+        combo_age = max(0, map_time - combo_changed_at) if combo_changed_at is not None else 300
+        combo_vertical_scale = 1.0 + 0.4 * max(0.0, 1.0 - combo_age / 300.0)
+        combo_alpha = min(1.0, combo_age / 120.0)
+        combo_tint = None
+        combo_colours = cfg.get("combo_colours", [])
+
+        if colour_combo_during_holds and active_ln_hold:
+            combo_tint = dominant_visible_colour(skin.get("hit_images", {}).get("300"))
+
+            if combo_tint is None and combo_colours:
+                combo_tint = combo_colours[(combo - 1) % len(combo_colours)]
+
         native_combo_drawn = draw_skin_text(
             frame,
             str(combo),
             skin.get("combo_glyphs", {}),
             play_center_x,
-            combo_top,
+            combo_center_y,
             cfg.get("combo_overlap", 0),
             skin_scale,
+            vertical_anchor="center",
+            vertical_scale=combo_vertical_scale,
+            alpha=combo_alpha,
+            tint=combo_tint,
         )
 
         if not native_combo_drawn:
-            draw_ui_text(frame, str(combo), (play_center_x, combo_top + int(28 * skin_scale)), 0.8 * ui_scale, anchor="center")
+            draw_ui_text(frame, str(combo), (play_center_x, combo_center_y), 0.8 * ui_scale, anchor="center")
 
     if show_side_overlay:
         right_x = width - int(24 * ui_scale)
-        stats_y = int(50 * ui_scale)
+        stats_y = int(72 * ui_scale)
         draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
         stats_y += int(32 * ui_scale)
         draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
@@ -1711,6 +1841,7 @@ def render_video(
     results_background_opacity=0.62,
     results_duration=4.5,
     show_results_screen=True,
+    colour_combo_during_holds=True,
 ):
     if progress_callback:
         progress_callback(0, "Preparing render: reading beatmap and replay...")
@@ -1844,7 +1975,10 @@ def render_video(
         "results_start_time": results_start_time,
         "notes": notes,
         "keys": beatmap.keys,
-        "title": f"{beatmap.artist} - {beatmap.title} [{beatmap.version}] | {mod_settings['mods']}",
+        "title": f"{beatmap.artist} - {beatmap.title} [{beatmap.version}]",
+        "mapper": beatmap.creator,
+        "player": getattr(replay, "username", "Unknown") if replay else "Unknown",
+        "mods": mod_settings["mods"],
         "output_dir": str(frames_dir),
         "scroll_time_ms": scroll_time_ms,
         "motion_blur": int(motion_blur),
@@ -1869,6 +2003,7 @@ def render_video(
         "results_background": results_background,
         "show_side_overlay": bool(show_side_overlay),
         "show_strain_graph": bool(show_strain_graph),
+        "colour_combo_during_holds": bool(colour_combo_during_holds),
         "vignette_mask": vignette_mask,
     }
 
@@ -1897,6 +2032,7 @@ def render_video(
             "results_background_opacity": float(results_background_opacity),
             "results_duration": float(results_duration),
             "show_results_screen": bool(show_results_screen),
+            "colour_combo_during_holds": bool(colour_combo_during_holds),
         },
     )
 
