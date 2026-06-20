@@ -118,14 +118,6 @@ The encoder order is:
 3. AMD H.264 AMF
 4. CPU `libx264`
 
-For Intel Iris Xe on Arch Linux or EndeavourOS:
-
-```bash
-sudo pacman -S --needed intel-media-driver libva-utils intel-gpu-tools
-vainfo --display drm --device /dev/dri/renderD128
-sudo intel_gpu_top
-```
-
 The selected encoder and every failed attempt are recorded in the debug report.
 
 ## Debug Report
