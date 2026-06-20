@@ -100,6 +100,10 @@ def parse_skin_ini(skin_folder: Path, keys: int):
     cfg = {
         "keys": keys,
         "skin_version": 1.0,
+        "combo_prefix": "score",
+        "combo_overlap": 0,
+        "score_prefix": "score",
+        "score_overlap": 0,
         "column_start": None,
         "hit_position": None,
         "column_widths": None,
@@ -150,6 +154,22 @@ def parse_skin_ini(skin_folder: Path, keys: int):
                     cfg["skin_version"] = float(value)
                 except ValueError:
                     pass
+
+            if current_section == "Fonts":
+                if key == "ComboPrefix":
+                    cfg["combo_prefix"] = value
+                elif key == "ComboOverlap":
+                    try:
+                        cfg["combo_overlap"] = int(float(value))
+                    except ValueError:
+                        pass
+                elif key == "ScorePrefix":
+                    cfg["score_prefix"] = value
+                elif key == "ScoreOverlap":
+                    try:
+                        cfg["score_overlap"] = int(float(value))
+                    except ValueError:
+                        pass
 
             if current_section != "Mania":
                 continue
@@ -259,6 +279,10 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "cfg": {
             "column_start": None,
             "skin_version": 1.0,
+            "combo_prefix": "score",
+            "combo_overlap": 0,
+            "score_prefix": "score",
+            "score_overlap": 0,
             "hit_position": None,
             "column_widths": None,
             "column_spacing": [0] * (keys - 1),
@@ -288,6 +312,8 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "ranking_elements": {},
         "ranking_element_densities": {},
         "ranking_hit_images": {},
+        "combo_glyphs": {},
+        "score_glyphs": {},
     }
 
     if not skin_folder:
@@ -373,6 +399,30 @@ def load_mania_skin(skin_folder: str | None, keys: int):
                 variants[density] = read_image(path)
 
         skin["ranking_hit_images"][key] = variants
+
+    def load_font_glyphs(prefix, characters):
+        glyphs = {}
+        suffix_names = {".": "dot", ",": "comma", "%": "percent"}
+
+        for character in characters:
+            variants = {}
+            suffix_name = suffix_names.get(character, character)
+
+            for density, suffix in ((1.0, ".png"), (2.0, "@2x.png")):
+                path = resolve_case_insensitive(folder / f"{prefix}-{suffix_name}{suffix}")
+
+                if not path.exists() and prefix == cfg.get("score_prefix"):
+                    path = resolve_case_insensitive(folder / f"score-{suffix_name}{suffix}")
+
+                if path.exists():
+                    variants[density] = read_image(path)
+
+            glyphs[character] = variants
+
+        return glyphs
+
+    skin["combo_glyphs"] = load_font_glyphs(cfg.get("combo_prefix", "score"), "0123456789x")
+    skin["score_glyphs"] = load_font_glyphs(cfg.get("score_prefix", "score"), "0123456789x,.%")
 
     for value in ("0", "50", "100", "200", "300", "300g"):
         image_name = images.get(f"Hit{value}")

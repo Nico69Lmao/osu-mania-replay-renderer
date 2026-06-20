@@ -164,6 +164,51 @@ def paste_rgba_centered_sized(frame, img, cx, cy, width, height, crop_alpha=Fals
     paste_rgba(frame, img, x, y)
 
 
+def select_skin_glyph(variants, height):
+    usable = {
+        density: image
+        for density, image in variants.items()
+        if has_visible_alpha(image) or max(image.shape[:2]) <= 4
+    }
+
+    if not usable:
+        return None, 1.0
+
+    preferred_density = 2.0 if height >= 800 and 2.0 in usable else 1.0
+    image = usable.get(preferred_density)
+
+    if image is None:
+        preferred_density, image = next(iter(usable.items()))
+
+    return image, preferred_density
+
+
+def draw_skin_text(frame, text, glyphs, center_x, top_y, overlap, coordinate_scale):
+    selected = []
+
+    for character in str(text):
+        image, density = select_skin_glyph(glyphs.get(character, {}), frame.shape[0])
+
+        if image is None:
+            return False
+
+        scale = coordinate_scale / density
+        selected.append((image, max(1, int(image.shape[1] * scale)), max(1, int(image.shape[0] * scale))))
+
+    if not selected:
+        return False
+
+    overlap_px = int(overlap * coordinate_scale)
+    total_width = sum(width for _, width, _ in selected) - overlap_px * max(0, len(selected) - 1)
+    x = int(center_x - total_width / 2)
+
+    for image, width, height in selected:
+        paste_rgba(frame, image, x, int(top_y), width, height)
+        x += width - overlap_px
+
+    return True
+
+
 def paste_ln_body(frame, img, cx, top_y, bottom_y, target_width):
     if img is None:
         return
@@ -256,6 +301,26 @@ def apply_motion_blur(frame, x, y, w, h, strength):
         return
 
     frame[y1:y2, x1:x2] = cv2.filter2D(frame[y1:y2, x1:x2], -1, kernel)
+
+
+def create_vignette_mask(width, height, strength):
+    strength = max(0.0, min(1.0, float(strength)))
+
+    if strength <= 0:
+        return None
+
+    x = np.linspace(-1.0, 1.0, width, dtype=np.float32)
+    y = np.linspace(-1.0, 1.0, height, dtype=np.float32)
+    xx, yy = np.meshgrid(x, y)
+    distance = np.clip((xx * xx + yy * yy) / 1.6, 0.0, 1.0)
+    return np.clip((1.0 - distance * strength) * 255.0, 0, 255).astype(np.uint8)
+
+
+def apply_vignette(frame, mask):
+    if mask is None:
+        return
+
+    frame[:] = (frame.astype(np.uint16) * mask[:, :, None].astype(np.uint16) // 255).astype(np.uint8)
 
 
 def mania_hit_windows(overall_difficulty, is_convert=False):
@@ -894,21 +959,21 @@ def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width,
     cv2.line(frame, (marker_x, y1), (marker_x, y2), (225, 225, 228), 1, cv2.LINE_AA)
 
 
-def replay_rank(score, mods_int=0):
-    if score >= 1_000_000:
+def replay_rank(accuracy, mods_int=0):
+    if accuracy >= 100.0 - 1e-9:
         rank = "X"
-    elif score >= 950_000:
+    elif accuracy > 95.0:
         rank = "S"
-    elif score >= 900_000:
+    elif accuracy > 90.0:
         rank = "A"
-    elif score >= 800_000:
+    elif accuracy > 80.0:
         rank = "B"
-    elif score >= 700_000:
+    elif accuracy > 70.0:
         rank = "C"
     else:
         rank = "D"
 
-    if rank in ("X", "S") and mods_int & (8 | 1024):
+    if rank in ("X", "S") and mods_int & (8 | 1024 | 1048576):
         rank += "H"
 
     return rank
@@ -1034,6 +1099,8 @@ def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, 
     ]
     row_ys = (274, 368, 462)
     ranking_hits = skin.get("ranking_hit_images", {})
+    score_glyphs = skin.get("score_glyphs", {})
+    score_overlap = skin.get("cfg", {}).get("score_overlap", 0)
 
     for row_y, row in zip(row_ys, rows):
         for label_x, value_x, (label, value) in zip((21, 340), (204, 522), row):
@@ -1055,11 +1122,19 @@ def draw_results_screen(frame, skin, title, counts, accuracy, max_combo, score, 
             elif not variants:
                 draw_ui_text(frame, label, (int(label_x * interface_scale), int(row_y * interface_scale)), 0.54 * text_scale, (185, 210, 235), 1)
 
-            draw_ui_text(frame, str(value), (int(value_x * interface_scale), int(row_y * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "right")
+            value_center_x = value_x - 34
 
-    draw_ui_text(frame, f"{max_combo}x", (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
-    draw_ui_text(frame, f"{accuracy:.2f}%", (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
-    draw_ui_text(frame, f"{score:,}", (int(354 * interface_scale), int(160 * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "center")
+            if not draw_skin_text(frame, str(value), score_glyphs, value_center_x * interface_scale, (row_y - 25) * interface_scale, score_overlap, interface_scale):
+                draw_ui_text(frame, str(value), (int(value_x * interface_scale), int(row_y * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "right")
+
+    if not draw_skin_text(frame, f"{max_combo}x", score_glyphs, 145 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
+        draw_ui_text(frame, f"{max_combo}x", (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+
+    if not draw_skin_text(frame, f"{accuracy:.2f}%", score_glyphs, 430 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
+        draw_ui_text(frame, f"{accuracy:.2f}%", (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+
+    if not draw_skin_text(frame, f"{score:07d}", score_glyphs, 354 * interface_scale, 130 * interface_scale, score_overlap, interface_scale):
+        draw_ui_text(frame, f"{score:,}", (int(354 * interface_scale), int(160 * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "center")
     pp_text = "pp  N/A" if pp is None else f"pp  {pp:.2f}"
     draw_ui_text(frame, pp_text, (int(rank_x), int(575 * interface_scale)), 0.58 * text_scale, (235, 240, 245), 1, "center")
 
@@ -1108,6 +1183,9 @@ def frame_worker(frame_id):
     judgement_lookup = CTX.get("judgement_lookup", {})
     star_rating = CTX.get("star_rating")
     difficulty_profile = CTX.get("difficulty_profile", [])
+    show_side_overlay = CTX.get("show_side_overlay", True)
+    show_strain_graph = CTX.get("show_strain_graph", True)
+    vignette_mask = CTX.get("vignette_mask")
 
     real_elapsed = int(frame_id * 1000 / fps)
     map_time = start_map_time + int(real_elapsed * speed_multiplier)
@@ -1336,15 +1414,16 @@ def frame_worker(frame_id):
         apply_motion_blur(frame, play_x - 16, top_y, play_width + 32, height, motion_blur)
 
     draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale)
-    draw_difficulty_graph(
-        frame,
-        difficulty_profile,
-        map_time,
-        start_map_time,
-        gameplay_end_time,
-        width,
-        height,
-    )
+    if show_strain_graph:
+        draw_difficulty_graph(
+            frame,
+            difficulty_profile,
+            map_time,
+            start_map_time,
+            gameplay_end_time,
+            width,
+            height,
+        )
 
     line_colour = skin_colour_to_bgra(cfg["colours"].get("ColourColumnLine")) or (65, 55, 55, 255)
 
@@ -1361,33 +1440,52 @@ def frame_worker(frame_id):
     if not cfg["keys_under_notes"]:
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
 
+    apply_vignette(frame, vignette_mask)
     draw_hit_judgements(frame, skin, judgements, map_time, lane_xs, column_widths, judge_y, note_widths)
-    right_x = width - int(24 * ui_scale)
-    stats_y = int(50 * ui_scale)
-    draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
-    stats_y += int(32 * ui_scale)
-    draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
-    stats_y += int(38 * ui_scale)
-    stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y)
-    stats_y = draw_pp_counter(
-        frame,
-        judgements,
-        map_time,
-        width,
-        stats_y + int(10 * ui_scale),
-        star_rating,
-    )
-    stats_y = draw_key_bpms(frame, event_lanes, map_time, width, stats_y + int(8 * ui_scale))
-    draw_timeline(
-        frame,
-        map_time,
-        start_map_time,
-        gameplay_end_time,
-        width,
-        height,
-        stats_y + int(8 * ui_scale),
-    )
-    draw_star_rating(frame, star_rating, height)
+
+    if combo > 0:
+        combo_top = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
+        play_center_x = play_x + play_width // 2
+        native_combo_drawn = draw_skin_text(
+            frame,
+            str(combo),
+            skin.get("combo_glyphs", {}),
+            play_center_x,
+            combo_top,
+            cfg.get("combo_overlap", 0),
+            skin_scale,
+        )
+
+        if not native_combo_drawn:
+            draw_ui_text(frame, str(combo), (play_center_x, combo_top + int(28 * skin_scale)), 0.8 * ui_scale, anchor="center")
+
+    if show_side_overlay:
+        right_x = width - int(24 * ui_scale)
+        stats_y = int(50 * ui_scale)
+        draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
+        stats_y += int(32 * ui_scale)
+        draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
+        stats_y += int(38 * ui_scale)
+        stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y)
+        stats_y = draw_pp_counter(
+            frame,
+            judgements,
+            map_time,
+            width,
+            stats_y + int(10 * ui_scale),
+            star_rating,
+        )
+        stats_y = draw_key_bpms(frame, event_lanes, map_time, width, stats_y + int(8 * ui_scale))
+        draw_timeline(
+            frame,
+            map_time,
+            start_map_time,
+            gameplay_end_time,
+            width,
+            height,
+            stats_y + int(8 * ui_scale),
+        )
+        draw_star_rating(frame, star_rating, height)
 
     write_render_frame(output_dir, frame_id, frame)
 
@@ -1537,6 +1635,7 @@ def write_debug_report(
     video_encoder_attempts=None,
     judgement_counts_reconciled=False,
     simulated_judgement_counts=None,
+    visual_options=None,
 ):
     replay = get_replay(replay_file) if replay_file else None
 
@@ -1561,6 +1660,7 @@ def write_debug_report(
         "video_encoder_attempts": video_encoder_attempts or [],
         "judgement_counts_reconciled": judgement_counts_reconciled,
         "simulated_judgement_counts": simulated_judgement_counts or {},
+        "visual_options": visual_options or {},
         "first_bad_judgements": bad_judgements[:100],
     }
 
@@ -1596,7 +1696,22 @@ def format_duration(seconds):
     return f"{seconds}s"
 
 
-def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_value, resolution, motion_blur=0, progress_callback=None):
+def render_video(
+    osu_file,
+    skin_folder,
+    output_file,
+    replay_file,
+    scroll_speed_value,
+    resolution,
+    motion_blur=0,
+    progress_callback=None,
+    show_side_overlay=True,
+    show_strain_graph=True,
+    vignette_strength=0,
+    results_background_opacity=0.62,
+    results_duration=4.5,
+    show_results_screen=True,
+):
     if progress_callback:
         progress_callback(0, "Preparing render: reading beatmap and replay...")
 
@@ -1606,7 +1721,7 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
     fps = 60
     background_path = Path(osu_file).parent / beatmap.background_file
     background_image = cv2.imread(str(background_path), cv2.IMREAD_COLOR) if background_path.exists() else None
-    results_background = prepare_results_background(background_image, width, height)
+    results_background = prepare_results_background(background_image, width, height, results_background_opacity)
 
     mod_settings = get_mod_settings(replay_file) if replay_file else {
         "mods_int": 0,
@@ -1662,15 +1777,20 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
 
     start_map_time = max(0, notes[0]["time"] - 2000)
     gameplay_end_time = max((note["end_time"] if note["end_time"] is not None else note["time"]) for note in notes)
-    results_start_time = gameplay_end_time + 1000
-    end_map_time = results_start_time + 4500
+    results_start_time = gameplay_end_time + 1000 if show_results_screen else gameplay_end_time + 2001
+    end_map_time = (
+        results_start_time + int(max(1.0, results_duration) * 1000)
+        if show_results_screen
+        else gameplay_end_time + 2000
+    )
     final_counts = judgement_counts(judgements)
     final_pp = mania_pp_value(star_rating, final_counts)
     replay_score = int(getattr(replay, "score", 0)) if replay else 0
     replay_max_combo = int(getattr(replay, "max_combo", 0)) if replay else 0
     replay_perfect = bool(getattr(replay, "perfect", False)) if replay else False
-    rank = replay_rank(replay_score, mod_settings["mods_int"])
-    difficulty_profile = build_difficulty_profile(notes, start_map_time, gameplay_end_time)
+    rank = replay_rank(simulated_accuracy, mod_settings["mods_int"])
+    difficulty_profile = build_difficulty_profile(notes, start_map_time, gameplay_end_time) if show_strain_graph else []
+    vignette_mask = create_vignette_mask(width, height, float(vignette_strength) / 100.0)
 
     real_duration_ms = int((end_map_time - start_map_time) / speed_multiplier)
     total_frames = max(1, int(real_duration_ms / 1000 * fps))
@@ -1747,6 +1867,9 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         "replay_rank": rank,
         "difficulty_profile": difficulty_profile,
         "results_background": results_background,
+        "show_side_overlay": bool(show_side_overlay),
+        "show_strain_graph": bool(show_strain_graph),
+        "vignette_mask": vignette_mask,
     }
 
     write_debug_report(
@@ -1767,6 +1890,14 @@ def render_video(osu_file, skin_folder, output_file, replay_file, scroll_speed_v
         star_rating=star_rating,
         judgement_counts_reconciled=counts_reconciled,
         simulated_judgement_counts=judgement_counts(judgements),
+        visual_options={
+            "show_side_overlay": bool(show_side_overlay),
+            "show_strain_graph": bool(show_strain_graph),
+            "vignette_strength": int(vignette_strength),
+            "results_background_opacity": float(results_background_opacity),
+            "results_duration": float(results_duration),
+            "show_results_screen": bool(show_results_screen),
+        },
     )
 
     start = time.time()

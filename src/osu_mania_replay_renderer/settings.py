@@ -13,6 +13,12 @@ DEFAULT_SETTINGS = {
     "scroll_speed": "30.0",
     "motion_blur": "0",
     "resolution": "1280x720",
+    "show_side_overlay": True,
+    "show_strain_graph": True,
+    "vignette_strength": "12",
+    "results_background_opacity": "62",
+    "results_duration": "4.5",
+    "show_results_screen": True,
 }
 
 

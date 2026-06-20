@@ -9,9 +9,11 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Renders long-note heads, bodies, tails, held states, and release judgements.
 - Uses OD-dependent osu!mania hit windows and reconciles final judgement totals with the authoritative counts stored in the OSR replay.
 - Displays combo, accuracy, judgement totals, star rating, estimated pp, per-key BPM, and a circular song timer.
+- Draws the gameplay combo with the selected skin's `ComboPrefix`, `ComboOverlap`, and mania `ComboPosition`, while keeping the optional side overlay.
 - Draws a compact strain profile with completed sections in green and upcoming sections in grey.
 - Supports DT, NC, and HT timing. NC also applies raised audio pitch.
 - Includes optional vertical motion blur.
+- Includes selectable side statistics, strain graph, vignette strength, results background opacity, results duration, and results-screen visibility.
 - Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
 - Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
 - Generates frames in parallel and stores temporary frames as quality-98 JPEG files for faster disk I/O.
@@ -83,6 +85,7 @@ The renderer reads the selected key-count block from `skin.ini`, including:
 - `NoteImage`, `NoteImageH`, `NoteImageL`, `NoteImageT`
 - `Hit0`, `Hit50`, `Hit100`, `Hit200`, `Hit300`, `Hit300g`
 - `StageLeft`, `StageRight`, `StageBottom`, `StageLight`, and `StageHint`
+- `ComboPrefix`, `ComboOverlap`, `ScorePrefix`, and `ScoreOverlap`
 
 The results screen follows the documented legacy v2 layout in a logical `1024x768` coordinate space. It uses `ranking-panel`, `ranking-{grade}`, `ranking-maxcombo`, `ranking-accuracy`, `ranking-graph`, `ranking-perfect`, and `ranking-title` when provided. osu!mania result judgements follow the official root-folder hierarchy: `hit*-0` first, followed by the static `hit*` image.
 
@@ -103,6 +106,8 @@ scroll_time_ms = max(290, 11485 / scroll_speed)
 ## Accuracy and PP
 
 Native mania hit windows depend on beatmap OD. Replay timestamps are used to assign the most plausible result to each object, while the OSR judgement counters guarantee that final `300g`, `300`, `200`, `100`, `50`, and miss totals match the recorded play.
+
+The results grade follows the official osu!mania accuracy thresholds: SS at 100%, S above 95%, A above 90%, B above 80%, C above 70%, and D otherwise. SS and S use their silver variants when Hidden, Flashlight, or Fade In is enabled.
 
 Displayed pp uses the official osu!mania performance formula when a matching star rating is available in `osu!.db`:
 
@@ -146,5 +151,6 @@ Each render creates `<video-name>.debug.json` containing:
 - [osu!mania scroll-time implementation](https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/UI/DrawableManiaRuleset.cs)
 - [Legacy mania skin configuration](https://github.com/ppy/osu/blob/master/osu.Game/Skinning/LegacyManiaSkinConfiguration.cs)
 - [osu!mania performance calculator](https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/Difficulty/ManiaPerformanceCalculator.cs)
+- [Official grade requirements](https://osu.ppy.sh/wiki/en/Gameplay/Grade#osu!mania)
 - [Legacy ranking-screen skin elements](https://osu.ppy.sh/wiki/en/Skinning/Interface#ranking-screen)
 - [osu!mania ranking-screen hit hierarchy](https://osu.ppy.sh/wiki/en/Skinning/FAQ#ranking-screen-hit-score-hierarchy)
