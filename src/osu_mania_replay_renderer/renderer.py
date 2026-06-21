@@ -17,6 +17,7 @@ from osu_mania_replay_renderer.replay_parser import get_replay_events
 from osu_mania_replay_renderer.osu_db_reader import read_mania_star_rating
 
 CTX = {}
+RESIZE_CACHE = {}
 MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
 
@@ -37,23 +38,37 @@ def draw_ui_text(frame, text, origin, scale=0.6, color=(235, 235, 235), thicknes
     cv2.putText(frame, text, (x, y), font, scale, color, thickness, line_type)
 
 
-def draw_song_header(frame, title, mapper, player, mods="", bar_height=None):
+def draw_song_header(frame, title, mapper, player, bar_height=None):
     """Draw the compact black metadata strip used by legacy replay playback."""
     height, width = frame.shape[:2]
     ui_scale = max(0.75, height / 1080.0)
     bar_height = int(bar_height) if bar_height is not None else max(42, int(58 * ui_scale))
-    cv2.rectangle(frame, (0, 0), (width, bar_height), (0, 0, 0), -1)
+    overlay = frame[:bar_height].copy()
+    overlay[:] = (0, 0, 0)
+    cv2.addWeighted(overlay, 0.78, frame[:bar_height], 0.22, 0, frame[:bar_height])
 
-    max_title_chars = max(24, int(width / max(7, 8 * ui_scale)))
-    display_title = title if len(title) <= max_title_chars else title[:max_title_chars - 3] + "..."
-    draw_ui_text(frame, display_title, (int(12 * ui_scale), int(23 * ui_scale)), 0.48 * ui_scale, (246, 246, 248), 1)
+    title_scale = max(0.55, bar_height / 68.0)
+    max_title_width = width - int(24 * ui_scale)
+    while title_scale > 0.38:
+        (title_width, title_height), _ = cv2.getTextSize(title, cv2.FONT_HERSHEY_SIMPLEX, title_scale, 1)
+        if title_width <= max_title_width and title_height <= bar_height * 0.48:
+            break
+        title_scale -= 0.04
+
+    title_y = max(int(22 * ui_scale), int(bar_height * 0.43))
+    draw_ui_text(frame, title, (int(12 * ui_scale), title_y), title_scale, (246, 246, 248), 1)
 
     details = f"Beatmap by {mapper}  |  Played by {player}"
-
-    if mods:
-        details += f"  |  {mods}"
-
-    draw_ui_text(frame, details, (int(12 * ui_scale), int(46 * ui_scale)), 0.36 * ui_scale, (190, 194, 202), 1)
+    details_y = bar_height - int(14 * ui_scale)
+    draw_ui_text(frame, details, (int(12 * ui_scale), details_y), 0.56 * ui_scale, (215, 218, 224), 1)
+    cv2.line(
+        frame,
+        (0, bar_height - 1),
+        (width, bar_height - 1),
+        (112, 118, 132),
+        max(1, int(ui_scale)),
+        cv2.LINE_AA,
+    )
 
 
 def format_clock(milliseconds):
@@ -66,12 +81,34 @@ def overlay_scale(height):
     return max(0.58, min(1.8, height / 900))
 
 
+def resize_texture(img, width, height, interpolation=cv2.INTER_AREA):
+    width = max(1, int(width))
+    height = max(1, int(height))
+
+    if img.shape[1] == width and img.shape[0] == height:
+        return img
+
+    if not img.flags.writeable:
+        key = (id(img), width, height, interpolation)
+        cached = RESIZE_CACHE.get(key)
+
+        if cached is not None and cached[0] is img:
+            return cached[1]
+
+        resized = cv2.resize(img, (width, height), interpolation=interpolation)
+        resized.flags.writeable = False
+        RESIZE_CACHE[key] = (img, resized)
+        return resized
+
+    return cv2.resize(img, (width, height), interpolation=interpolation)
+
+
 def paste_rgba(frame, img, x, y, w=None, h=None):
     if img is None:
         return
 
     if w and h:
-        img = cv2.resize(img, (max(1, w), max(1, h)), interpolation=cv2.INTER_AREA)
+        img = resize_texture(img, w, h)
 
     if len(img.shape) == 2:
         img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
@@ -114,7 +151,7 @@ def paste_rgba_centered(frame, img, cx, cy, scale=1.0, max_width=None):
         w = int(w * ratio)
         h = int(h * ratio)
 
-    img = cv2.resize(img, (max(1, w), max(1, h)), interpolation=cv2.INTER_AREA)
+    img = resize_texture(img, w, h)
 
     x = int(cx - w / 2)
     y = int(cy - h / 2)
@@ -135,7 +172,7 @@ def paste_rgba_bottom_centered(frame, img, cx, bottom_y, scale=1.0, max_width=No
         w = int(w * ratio)
         h = int(h * ratio)
 
-    img = cv2.resize(img, (max(1, w), max(1, h)), interpolation=cv2.INTER_AREA)
+    img = resize_texture(img, w, h)
 
     x = int(cx - w / 2)
     y = int(bottom_y - h)
@@ -199,7 +236,7 @@ def paste_rgba_centered_sized(frame, img, cx, cy, width, height, crop_alpha=Fals
             x1, y1, x2, y2 = bbox
             img = img[y1:y2, x1:x2]
 
-    img = cv2.resize(img, (max(1, width), max(1, height)), interpolation=cv2.INTER_AREA)
+    img = resize_texture(img, width, height)
     x = int(cx - width / 2)
     y = int(cy - height / 2)
 
@@ -210,7 +247,8 @@ def select_skin_glyph(variants, height):
     usable = {
         density: image
         for density, image in variants.items()
-        if has_visible_alpha(image) or max(image.shape[:2]) <= 4
+        if has_meaningful_visible_alpha(image)
+        and image.shape[1] <= image.shape[0] * 4
     }
 
     if not usable:
@@ -248,6 +286,14 @@ def draw_skin_text(
         if image is None:
             return False
 
+        bbox = alpha_bbox(image)
+
+        if bbox:
+            _, y1, _, y2 = bbox
+            # Preserve horizontal canvas/advance because ComboOverlap and
+            # ScoreOverlap are defined against the original glyph width.
+            image = image[y1:y2, :]
+
         scale = coordinate_scale / density
         selected.append((
             image,
@@ -282,6 +328,65 @@ def draw_skin_text(
         x += width - overlap_px
 
     return True
+
+
+def measure_skin_text(text, glyphs, overlap, coordinate_scale, frame_height):
+    widths = []
+    heights = []
+
+    for character in str(text):
+        image, density = select_skin_glyph(glyphs.get(character, {}), frame_height)
+
+        if image is None:
+            return None
+
+        bbox = alpha_bbox(image)
+        visible_height = bbox[3] - bbox[1] if bbox else image.shape[0]
+        scale = coordinate_scale / density
+        widths.append(max(1, int(image.shape[1] * scale)))
+        heights.append(max(1, int(visible_height * scale)))
+
+    if not widths:
+        return None
+
+    overlap_px = int(overlap * coordinate_scale)
+    return sum(widths) - overlap_px * max(0, len(widths) - 1), max(heights)
+
+
+def draw_skin_percent_fallback(frame, glyphs, x, top_y, coordinate_scale):
+    """Build a percent sign from the skin's zero glyph when no % exists."""
+    dot, density = select_skin_glyph(glyphs.get("0", {}), frame.shape[0])
+
+    if dot is None:
+        return None
+
+    bbox = alpha_bbox(dot)
+
+    if not bbox:
+        return None
+
+    x1, y1, x2, y2 = bbox
+    dot = dot[y1:y2, x1:x2]
+    scale = coordinate_scale / density
+    dot_w = max(3, int(dot.shape[1] * scale * 0.42))
+    dot_h = max(3, int(dot.shape[0] * scale * 0.42))
+    symbol_w = max(dot_w * 3, int(14 * coordinate_scale))
+    symbol_h = max(dot_h * 4, int(20 * coordinate_scale))
+    top_dot_x = int(x + symbol_w - dot_w)
+    bottom_dot_y = int(top_y + symbol_h - dot_h)
+    paste_rgba(frame, dot, top_dot_x, int(top_y), dot_w, dot_h)
+    paste_rgba(frame, dot, int(x), bottom_dot_y, dot_w, dot_h)
+    rgb = dominant_visible_colour(dot) or (245, 245, 248)
+    bgr = (rgb[2], rgb[1], rgb[0])
+    cv2.line(
+        frame,
+        (int(x + dot_w), int(top_y + symbol_h - dot_h)),
+        (int(x + symbol_w - dot_w), int(top_y + dot_h)),
+        bgr,
+        max(1, int(1.2 * coordinate_scale)),
+        cv2.LINE_AA,
+    )
+    return symbol_w, symbol_h
 
 
 def paste_ln_body(frame, img, cx, top_y, bottom_y, target_width):
@@ -461,6 +566,95 @@ def judgement_counts(judgements):
     return counts
 
 
+def recompute_judgement_state(judgements):
+    """Rebuild combo and accuracy in display order, including stable LN ticks."""
+    combo = 0
+    judged = 0
+    score_sum = 0
+
+    judgements.sort(key=lambda j: (j.get("display_time", j["time"]), j.get("time", 0)))
+
+    for judgement in judgements:
+        if judgement.get("counts_accuracy", True):
+            value = judgement["value"]
+            judged += 1
+            score_sum += value
+
+        if judgement.get("combo_break", False):
+            combo = 0
+        else:
+            combo += int(judgement.get("combo_delta", 0))
+
+        judgement["combo"] = combo
+        judgement["accuracy"] = (score_sum / (judged * 300)) * 100 if judged else 100.0
+
+    return combo
+
+
+def build_event_lanes(events, keys):
+    """Index physical replay key states without re-applying Mirror."""
+    indexed = [[] for _ in range(keys)]
+
+    for event in events:
+        lane = event["lane"]
+
+        if 0 <= lane < keys:
+            indexed[lane].append((event["time"], event["pressed"]))
+
+    return [
+        ([event_time for event_time, _ in lane], [pressed for _, pressed in lane])
+        for lane in indexed
+    ]
+
+
+def add_stable_ln_ticks(judgements, notes, events, keys, mirror):
+    """Add stable's 100 ms hold-note combo ticks when the lane is held."""
+    judgements[:] = [j for j in judgements if j.get("kind") != "ln_tick"]
+    heads = {
+        j.get("note_id"): j
+        for j in judgements
+        if j.get("kind") == "ln_head"
+    }
+    lane_events = build_event_lanes(events, keys)
+
+    for note_id, note in enumerate(notes):
+        if note.get("end_time") is None:
+            continue
+
+        lane = keys - 1 - note["lane"] if mirror else note["lane"]
+        head = heads.get(note_id)
+
+        if head is None or head.get("value", 0) <= 0 or not (0 <= lane < keys):
+            continue
+
+        times, states = lane_events[lane]
+        tick_time = note["time"] + 100
+
+        while tick_time < note["end_time"]:
+            event_i = bisect_right(times, tick_time) - 1
+
+            if event_i >= 0 and states[event_i]:
+                judgements.append({
+                    "time": tick_time,
+                    "display_time": tick_time,
+                    "lane": lane,
+                    "kind": "ln_tick",
+                    "note_id": note_id,
+                    "combo": 0,
+                    "accuracy": 100.0,
+                    "value": 0,
+                    "diff": None,
+                    "image_key": None,
+                    "counts_accuracy": False,
+                    "combo_delta": 1,
+                    "combo_break": False,
+                })
+
+            tick_time += 100
+
+    recompute_judgement_state(judgements)
+
+
 def reconcile_judgements_with_replay(judgements, target_counts):
     """Match stable's aggregate OSR results while retaining timing-based per-note ordering.
 
@@ -492,19 +686,14 @@ def reconcile_judgements_with_replay(judgements, target_counts):
 
         cursor += target_counts[key]
 
-    combo = 0
-    judged = 0
-    score_sum = 0
-
     for judgement in judgements:
         if judgement.get("counts_accuracy", True):
             value = judgement["value"]
-            combo = combo + 1 if value > 0 else 0
-            judged += 1
-            score_sum += value
+            judgement["combo_break"] = value <= 0
+            if judgement.get("kind") == "tap":
+                judgement["combo_delta"] = 1 if value > 0 else 0
 
-        judgement["combo"] = combo
-        judgement["accuracy"] = (score_sum / (judged * 300)) * 100 if judged else 100.0
+    recompute_judgement_state(judgements)
 
     return True
 
@@ -545,7 +734,6 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
     results = []
     debug_bad = []
 
-    combo = 0
     score_sum = 0
     judged = 0
     lane_holding = [False] * keys
@@ -554,6 +742,7 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
     for obj in objects:
         value = 0
         diff_used = None
+        event_time = None
 
         counts_accuracy = obj["kind"] != "ln_head"
 
@@ -575,6 +764,7 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
                 used_press.add(best_i)
                 lane_holding[obj["lane"]] = True
                 diff_used = best
+                event_time = press_events[best_i]["time"]
 
                 value = mania_score_value(best, windows)
 
@@ -604,6 +794,7 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
                 used_release.add(best_i)
                 lane_holding[obj["lane"]] = False
                 diff_used = best
+                event_time = release_events[best_i]["time"]
 
                 combined = head["diff"] + best
 
@@ -623,7 +814,6 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
             lane_holding[obj["lane"]] = False
 
         if counts_accuracy:
-            combo = combo + 1 if value > 0 else 0
             judged += 1
             score_sum += value
 
@@ -633,13 +823,17 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
             "time": obj["time"],
             "lane": obj["lane"],
             "kind": obj["kind"],
-            "combo": combo,
+            "note_id": obj["note_id"],
+            "combo": 0,
             "accuracy": accuracy,
             "value": value,
             "diff": diff_used,
             "image_key": hit_image_key(value, diff_used),
-            "display_time": obj["time"] if diff_used is None else obj["time"] + (diff_used if value > 0 else 0),
+            "display_time": event_time if event_time is not None else obj["time"],
+            "hit_time": event_time,
             "counts_accuracy": counts_accuracy,
+            "combo_delta": 1 if obj["kind"] in ("tap", "ln_head") and value > 0 else 0,
+            "combo_break": value <= 0,
         }
 
         results.append(result)
@@ -647,6 +841,7 @@ def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_con
         if counts_accuracy and value < 300 and len(debug_bad) < 100:
             debug_bad.append(result)
 
+    add_stable_ln_ticks(results, notes, events, keys, mirror)
     return results, debug_bad
 
 
@@ -668,8 +863,9 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
 
         test_judgements, test_bad = build_judgements(notes, shifted_events, keys, mirror, overall_difficulty, is_convert)
         test_accuracy = test_judgements[-1]["accuracy"] if test_judgements else 100.0
-        misses = sum(1 for j in test_judgements if j["value"] == 0)
-        timing_error = sum((j["diff"] or 180) for j in test_judgements)
+        scoring = [j for j in test_judgements if j.get("counts_accuracy", True)]
+        misses = sum(1 for j in scoring if j["value"] == 0)
+        timing_error = sum((j["diff"] or 180) for j in scoring)
         count_error = 0
 
         if target_counts:
@@ -697,9 +893,10 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
 
 
 def init_worker(ctx):
-    global CTX
+    global CTX, RESIZE_CACHE
     cv2.setNumThreads(1)
     CTX = ctx
+    RESIZE_CACHE = {}
 
 
 def draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths):
@@ -765,18 +962,15 @@ def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
     if stage_bottom is None or not has_visible_alpha(stage_bottom):
         return
 
-    bbox = alpha_bbox(stage_bottom)
-
-    if bbox and bbox[3] <= stage_bottom.shape[0] / 2:
-        x1, y1, x2, y2 = bbox
-        visible_cover = stage_bottom[y1:y2, x1:x2]
-        aspect_height = int(play_width * visible_cover.shape[0] / max(1, visible_cover.shape[1]))
-        cover_h = max(1, min(aspect_height, int(84 * skin_scale)))
-        paste_rgba(frame, visible_cover, play_x, 0, play_width, cover_h)
-        return
-
-    cover_h = min(height, int(stage_bottom.shape[0] * skin_scale))
-    paste_rgba(frame, stage_bottom, play_x, height - cover_h, play_width, cover_h)
+    # Stable uses a bottom-centred origin (top-centred for UpsideDown) and does
+    # not stretch this element to the stage width. Transparent canvas padding is
+    # meaningful and must be preserved for lane-cover positioning.
+    cover_w = max(1, int(stage_bottom.shape[1] * skin_scale))
+    cover_h = max(1, int(stage_bottom.shape[0] * skin_scale))
+    cover_x = int(play_x + play_width / 2 - cover_w / 2)
+    upside_down = bool(skin.get("cfg", {}).get("upside_down", False))
+    cover_y = 0 if upside_down else height - cover_h
+    paste_rgba(frame, stage_bottom, cover_x, cover_y, cover_w, cover_h)
 
 
 def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane_xs, column_widths, judge_y, note_widths):
@@ -791,11 +985,15 @@ def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane
     judgement_y = int(max(score_position, combo_position + 50) * skin_scale)
     latest_i = bisect_right(judgement_times, map_time) - 1
 
+    # Stable LN combo ticks are internal combo events, not hit judgements. Do
+    # not let their value=0 surface as a fake MISS while a hold is active.
+    while latest_i >= 0 and not judgements[latest_i].get("counts_accuracy", True):
+        latest_i -= 1
+
     if latest_i < 0:
         return
 
     latest = judgements[latest_i]
-
     display_time = latest.get("display_time", latest["time"])
 
     if map_time - display_time > 1000:
@@ -805,14 +1003,28 @@ def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane
     key = latest.get("image_key") or hit_image_key(value, latest.get("diff"))
     img = skin.get("hit_images", {}).get(key)
 
-    if img is not None:
-        paste_rgba_centered(
+    if img is not None and has_visible_alpha(img):
+        bbox = alpha_bbox(img)
+
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            img = img[y1:y2, x1:x2]
+
+        target_h = max(1, int((8 if key == "300g" else 14) * skin_scale))
+        target_w = max(1, int(img.shape[1] * target_h / max(1, img.shape[0])))
+        max_w = max(1, int(100 * skin_scale))
+
+        if target_w > max_w:
+            target_h = max(1, int(target_h * max_w / target_w))
+            target_w = max_w
+
+        paste_rgba_centered_sized(
             frame,
             img,
             play_center_x,
             judgement_y,
-            scale=skin_scale,
-            max_width=max(1, int(180 * skin_scale)),
+            target_w,
+            target_h,
         )
 
 
@@ -905,17 +1117,37 @@ def draw_pp_counter(frame, judgements, map_time, width, y, star_rating):
     return y + int(28 * ui_scale)
 
 
+def stable_key_bpm(times, states, map_time):
+    end_i = bisect_right(times, map_time)
+    start_i = max(0, bisect_left(times, map_time - 2400))
+    press_times = [times[i] for i in range(start_i, end_i) if states[i]]
+
+    if len(press_times) < 2:
+        return 0
+
+    intervals = [
+        interval
+        for interval in np.diff(press_times[-9:])
+        if 20 <= interval <= 2000
+    ]
+
+    if not intervals:
+        return 0
+
+    return min(999, int(round(60000.0 / float(np.median(intervals)))))
+
+
 def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
     ui_scale = overlay_scale(frame.shape[0])
     right_x = width - int(24 * ui_scale)
-    window_ms = 2000
+    window_ms = 1400
     lane_count = max(1, len(event_lanes))
-    lane_w = max(18, int(25 * ui_scale))
-    lane_gap = max(4, int(6 * ui_scale))
+    lane_w = max(20, int(27 * ui_scale))
+    lane_gap = max(4, int(7 * ui_scale))
     total_w = lane_count * lane_w + (lane_count - 1) * lane_gap
     x1 = right_x - total_w
     history_top = y + int(18 * ui_scale)
-    history_h = max(76, int(108 * ui_scale))
+    history_h = max(112, int(154 * ui_scale))
     history_bottom = history_top + history_h
     key_top = history_bottom + int(7 * ui_scale)
     key_h = max(17, int(22 * ui_scale))
@@ -940,20 +1172,31 @@ def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
             if not states[event_i]:
                 continue
 
-            press_time = max(map_time - window_ms, times[event_i])
-            release_time = map_time
+            press_time = times[event_i]
+            press_y = history_bottom - int((map_time - press_time) / window_ms * history_h)
+            press_y = max(history_top, min(history_bottom, press_y))
+            cv2.line(
+                frame,
+                (lane_x + 2, press_y),
+                (lane_x + lane_w - 2, press_y),
+                (214, 218, 205),
+                max(1, int(2 * ui_scale)),
+                cv2.LINE_AA,
+            )
 
-            if event_i + 1 < len(times):
-                release_time = min(map_time, times[event_i + 1])
+            release_time = times[event_i + 1] if event_i + 1 < len(times) else map_time
+            hold_duration = max(0, release_time - press_time)
 
-            if release_time < map_time - window_ms:
-                continue
-
-            top = history_bottom - int((map_time - press_time) / window_ms * history_h)
-            bottom = history_bottom - int((map_time - release_time) / window_ms * history_h)
-            top = max(history_top, min(history_bottom, top))
-            bottom = max(top + 3, min(history_bottom, bottom))
-            cv2.rectangle(frame, (lane_x, top), (lane_x + lane_w, bottom), (202, 207, 186), -1)
+            if hold_duration >= 120:
+                release_time = min(map_time, release_time)
+                release_y = history_bottom - int((map_time - release_time) / window_ms * history_h)
+                release_y = max(history_top, min(history_bottom, release_y))
+                top, bottom = sorted((press_y, release_y))
+                if bottom > top:
+                    hold_overlay = frame[top:bottom + 1, lane_x + 3:lane_x + lane_w - 2]
+                    hold_overlay[:] = (
+                        hold_overlay.astype(np.uint16) * 2 + np.array((135, 140, 128), dtype=np.uint16)
+                    ) // 3
 
         is_pressed = bool(pressed[lane]) if lane < len(pressed) else False
         key_colour = (90, 205, 245) if is_pressed else (30, 31, 34)
@@ -970,9 +1213,10 @@ def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
             "center",
         )
 
-        press_start = bisect_left(times, map_time - window_ms)
-        presses = sum(1 for state in states[press_start:end_i] if state)
-        bpm = min(999, int(round(presses * 60000 / window_ms)))
+        # A median interval produces a continuous, timing-accurate rate and is
+        # robust against a single jack/chord outlier. Unlike fixed-window
+        # counting it is not quantised in 20/30 BPM blocks.
+        bpm = stable_key_bpm(times, states, map_time)
         draw_ui_text(
             frame,
             f"{bpm:03d}",
@@ -989,7 +1233,7 @@ def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
 def draw_star_rating(frame, star_rating, height):
     text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
     ui_scale = overlay_scale(height)
-    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(72 * ui_scale)), 0.56 * ui_scale)
+    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(140 * ui_scale)), 0.56 * ui_scale)
 
 
 def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, y):
@@ -1056,15 +1300,19 @@ def build_difficulty_profile(notes, start_time, end_time, sample_count=220):
     return np.clip(smoothed / max(ceiling, 0.001), 0.0, 1.0).tolist()
 
 
-def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width, height):
+def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width, height, play_x, play_width):
     if not profile:
         return
 
     ui_scale = overlay_scale(height)
-    x2 = width - int(205 * ui_scale)
-    x1 = x2 - int(320 * ui_scale)
-    graph_h = max(26, int(44 * ui_scale))
-    y2 = height - int(14 * ui_scale)
+    gap = int(28 * ui_scale)
+    right_start = play_x + play_width + gap
+    max_graph_w = int(416 * ui_scale)
+    x2 = width
+    x1 = max(right_start, width - max_graph_w)
+
+    graph_h = max(52, int(82 * ui_scale))
+    y2 = height
     y1 = y2 - graph_h
 
     if x2 - x1 < 100:
@@ -1119,14 +1367,27 @@ def replay_rank(accuracy, mods_int=0):
     return rank
 
 
-def paste_legacy_ranking_asset(frame, image, density, x, y, origin="top_left"):
+def paste_legacy_ranking_asset(frame, image, density, x, y, origin="top_left", crop_alpha=False, max_size=None):
     if image is None or not has_visible_alpha(image):
         return
+
+    if crop_alpha:
+        bbox = alpha_bbox(image)
+
+        if bbox:
+            x1, y1, x2, y2 = bbox
+            image = image[y1:y2, x1:x2]
 
     interface_scale = frame.shape[0] / 768
     image_scale = interface_scale / max(1.0, density)
     target_w = max(1, int(image.shape[1] * image_scale))
     target_h = max(1, int(image.shape[0] * image_scale))
+
+    if max_size:
+        max_w, max_h = max_size
+        ratio = min(1.0, max_w / target_w, max_h / target_h)
+        target_w = max(1, int(target_w * ratio))
+        target_h = max(1, int(target_h * ratio))
     draw_x = int(x)
     draw_y = int(y)
 
@@ -1137,6 +1398,78 @@ def paste_legacy_ranking_asset(frame, image, density, x, y, origin="top_left"):
         draw_x -= target_w
 
     paste_rgba(frame, image, draw_x, draw_y, target_w, target_h)
+
+
+def draw_ranking_hit_asset(frame, skin, key, x, y, interface_scale):
+    variants = skin.get("ranking_hit_images", {}).get(key, {})
+    image, density = select_skin_glyph(variants, frame.shape[0])
+
+    if image is None:
+        image = skin.get("hit_images", {}).get(key)
+        density = 1.0
+
+    if not has_visible_alpha(image):
+        return False
+
+    bbox = alpha_bbox(image)
+
+    if bbox:
+        x1, y1, x2, y2 = bbox
+        tiny_asset = x2 - x1 < 6 or y2 - y1 < 6
+
+        if key != "300g" and tiny_asset:
+            return False
+
+        image = image[y1:y2, x1:x2]
+    else:
+        tiny_asset = False
+
+    if key == "300g" and tiny_asset:
+        target_h = max(1, int(image.shape[0] * interface_scale / max(1.0, density)))
+    else:
+        target_h = max(1, int(28 * interface_scale))
+    target_w = max(1, int(image.shape[1] * target_h / max(1, image.shape[0])))
+    max_w = int(112 * interface_scale)
+
+    if target_w > max_w:
+        target_h = max(1, int(target_h * max_w / target_w))
+        target_w = max_w
+
+    paste_rgba(frame, image, int(x), int(y - target_h / 2), target_w, target_h)
+    return True
+
+
+def draw_result_mods(frame, skin, mods, rank_x, rank_y, interface_scale):
+    acronyms = [mod for mod in str(mods).split() if mod and mod != "NM"]
+
+    if not acronyms:
+        return
+
+    icon_size = max(32, int(48 * interface_scale))
+    gap = max(5, int(6 * interface_scale))
+    total_h = len(acronyms) * icon_size + max(0, len(acronyms) - 1) * gap
+    x = frame.shape[1] - icon_size - int(12 * interface_scale)
+    y = int(rank_y - total_h / 2)
+
+    for acronym in acronyms:
+        icon = skin.get("mod_icons", {}).get(acronym)
+
+        if has_meaningful_visible_alpha(icon):
+            paste_rgba(frame, icon, x, y, icon_size, icon_size)
+        else:
+            cv2.rectangle(frame, (x, y), (x + icon_size, y + icon_size), (28, 31, 38), -1)
+            cv2.rectangle(frame, (x, y), (x + icon_size, y + icon_size), (210, 214, 220), 1, cv2.LINE_AA)
+            draw_ui_text(
+                frame,
+                acronym,
+                (x + icon_size // 2, y + int(icon_size * 0.64)),
+                0.38 * interface_scale,
+                (242, 242, 245),
+                1,
+                "center",
+            )
+
+        y += icon_size + gap
 
 
 def prepare_results_background(image, width, height, opacity=0.62):
@@ -1182,7 +1515,7 @@ def draw_results_screen(
         frame[:] = (24, 27, 36)
 
     panel_y = (102 if is_v2 else 74) * interface_scale
-    draw_song_header(frame, title, mapper, player, mods, panel_y)
+    draw_song_header(frame, title, mapper, player, panel_y)
 
     if panel is not None:
         paste_legacy_ranking_asset(
@@ -1203,7 +1536,10 @@ def draw_results_screen(
         rank_x,
         rank_y,
         "center",
+        crop_alpha=True,
+        max_size=(int(250 * interface_scale), int(250 * interface_scale)),
     )
+    draw_result_mods(frame, skin, mods, rank_x, rank_y, interface_scale)
     paste_legacy_ranking_asset(
         frame,
         elements.get("maxcombo"),
@@ -1253,24 +1589,21 @@ def draw_results_screen(
         (("50", counts.get("50", 0)), ("Miss", counts.get("0", 0))),
     ]
     row_ys = (274, 368, 462)
-    mania_hits = skin.get("hit_images", {})
     score_glyphs = skin.get("score_glyphs", {})
     score_overlap = skin.get("cfg", {}).get("score_overlap", 0)
 
     for row_y, row in zip(row_ys, rows):
         for label_x, value_x, (label, value) in zip((21, 340), (204, 522), row):
             image_key = "0" if label == "Miss" else label
-            hit_image = mania_hits.get(image_key)
 
-            if has_meaningful_visible_alpha(hit_image):
-                paste_legacy_ranking_asset(
-                    frame,
-                    hit_image,
-                    1.0,
-                    label_x * interface_scale,
-                    (row_y - 34) * interface_scale,
-                )
-            else:
+            if not draw_ranking_hit_asset(
+                frame,
+                skin,
+                image_key,
+                label_x * interface_scale,
+                (row_y - 9) * interface_scale,
+                interface_scale,
+            ):
                 draw_ui_text(frame, label, (int(label_x * interface_scale), int(row_y * interface_scale)), 0.54 * text_scale, (185, 210, 235), 1)
 
             value_center_x = value_x - 34
@@ -1278,16 +1611,59 @@ def draw_results_screen(
             if not draw_skin_text(frame, str(value), score_glyphs, value_center_x * interface_scale, (row_y - 25) * interface_scale, score_overlap, interface_scale):
                 draw_ui_text(frame, str(value), (int(value_x * interface_scale), int(row_y * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "right")
 
-    if not draw_skin_text(frame, f"{max_combo}x", score_glyphs, 145 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
-        draw_ui_text(frame, f"{max_combo}x", (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+    if not draw_skin_text(frame, str(max_combo), score_glyphs, 140 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
+        draw_ui_text(frame, str(max_combo), (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
 
-    if not draw_skin_text(frame, f"{accuracy:.2f}%", score_glyphs, 430 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
-        draw_ui_text(frame, f"{accuracy:.2f}%", (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+    accuracy_text = f"{accuracy:.2f}%"
+
+    if not draw_skin_text(frame, accuracy_text, score_glyphs, 430 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
+        accuracy_number = f"{accuracy:.2f}"
+        accuracy_metrics = measure_skin_text(accuracy_number, score_glyphs, score_overlap, interface_scale, height)
+
+        if accuracy_metrics:
+            number_w, _ = accuracy_metrics
+            percent_w = int(14 * interface_scale)
+            gap = int(6 * interface_scale)
+            group_w = number_w + gap + percent_w
+            group_x = int(430 * interface_scale - group_w / 2)
+            number_center_x = group_x + number_w / 2
+            accuracy_y = int(540 * interface_scale)
+            draw_skin_text(frame, accuracy_number, score_glyphs, number_center_x, accuracy_y, score_overlap, interface_scale)
+
+            if draw_skin_percent_fallback(frame, score_glyphs, group_x + number_w + gap, accuracy_y, interface_scale) is None:
+                draw_ui_text(frame, "%", (group_x + number_w + gap, accuracy_y + int(20 * interface_scale)), 0.56 * text_scale, (250, 250, 252), 1)
+        else:
+            draw_ui_text(frame, accuracy_text, (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
 
     if not draw_skin_text(frame, f"{score:07d}", score_glyphs, 354 * interface_scale, 130 * interface_scale, score_overlap, interface_scale):
         draw_ui_text(frame, f"{score:,}", (int(354 * interface_scale), int(160 * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "center")
-    pp_text = "pp  N/A" if pp is None else f"pp  {pp:.2f}"
-    draw_ui_text(frame, pp_text, (int(rank_x), int(575 * interface_scale)), 0.58 * text_scale, (235, 240, 245), 1, "center")
+
+    if pp is None:
+        draw_ui_text(frame, "pp  N/A", (int(rank_x), int(575 * interface_scale)), 0.58 * text_scale, (235, 240, 245), 1, "center")
+    else:
+        pp_value = f"{pp:.2f}"
+        pp_metrics = measure_skin_text(pp_value, score_glyphs, score_overlap, interface_scale, height)
+        suffix_scale = 0.82 * interface_scale
+        (suffix_w, suffix_h), _ = cv2.getTextSize("pp", cv2.FONT_HERSHEY_SIMPLEX, suffix_scale, 1)
+        gap = int(8 * interface_scale)
+
+        if pp_metrics:
+            number_w, number_h = pp_metrics
+            group_w = number_w + gap + suffix_w
+            group_x = int(rank_x - group_w / 2)
+            number_center_x = group_x + number_w / 2
+            pp_y = int(540 * interface_scale)
+            draw_skin_text(frame, pp_value, score_glyphs, number_center_x, pp_y, score_overlap, interface_scale)
+            draw_ui_text(
+                frame,
+                "pp",
+                (group_x + number_w + gap, pp_y + max(number_h, suffix_h)),
+                suffix_scale,
+                (245, 245, 248),
+                1,
+            )
+        else:
+            draw_ui_text(frame, f"{pp_value} pp", (int(rank_x), int(575 * interface_scale)), 0.58 * text_scale, (235, 240, 245), 1, "center")
 
     if skin.get("ranking_ranks", {}).get(rank) is None:
         draw_ui_text(frame, rank, (int(rank_x), int(rank_y)), 3.0 * text_scale, (245, 245, 250), 2, "center")
@@ -1298,7 +1674,7 @@ def write_render_frame(output_dir, frame_id, frame):
     cv2.imwrite(
         str(out),
         frame,
-        [cv2.IMWRITE_JPEG_QUALITY, 98],
+        [cv2.IMWRITE_JPEG_QUALITY, 94],
     )
 
 
@@ -1348,28 +1724,12 @@ def frame_worker(frame_id):
     real_elapsed = int(frame_id * 1000 / fps)
     map_time = start_map_time + int(real_elapsed * speed_multiplier)
 
-    frame = np.zeros((height, width, 3), dtype=np.uint8)
-    frame[:] = (12, 12, 15)
-
     if map_time >= results_start_time:
-        draw_results_screen(
-            frame,
-            skin,
-            title,
-            mapper,
-            player,
-            mods,
-            CTX.get("final_counts", {}),
-            CTX.get("final_accuracy", 100.0),
-            CTX.get("replay_max_combo", 0),
-            CTX.get("replay_score", 0),
-            CTX.get("final_pp"),
-            CTX.get("replay_rank", "D"),
-            CTX.get("replay_perfect", False),
-            CTX.get("results_background"),
-        )
+        frame = CTX["results_frame"].copy()
         write_render_frame(output_dir, frame_id, frame)
         return frame_id
+
+    frame = np.zeros((height, width, 3), dtype=np.uint8)
 
     cfg = skin["cfg"]
 
@@ -1427,18 +1787,15 @@ def frame_worker(frame_id):
     combo = 0
     accuracy = 100.0
     combo_changed_at = None
-
-    for j in judgements:
-        if not j.get("counts_accuracy", True):
-            continue
-
+    for j in display_judgements:
         display_time = j.get("display_time", j["time"])
 
         if display_time <= map_time:
-            if j["combo"] != combo:
+            if j["combo"] > combo:
                 combo_changed_at = display_time
             combo = j["combo"]
-            accuracy = j["accuracy"]
+            if j.get("counts_accuracy", True):
+                accuracy = j["accuracy"]
         else:
             break
 
@@ -1458,7 +1815,7 @@ def frame_worker(frame_id):
     else:
         for event in events:
             if event["time"] <= map_time:
-                lane = keys - 1 - event["lane"] if mirror else event["lane"]
+                lane = event["lane"]
 
                 if 0 <= lane < keys:
                     pressed[lane] = event["pressed"]
@@ -1592,6 +1949,8 @@ def frame_worker(frame_id):
             gameplay_end_time,
             width,
             height,
+            play_x,
+            play_width,
         )
 
     line_colour = skin_colour_to_bgra(cfg["colours"].get("ColourColumnLine")) or (65, 55, 55, 255)
@@ -1615,9 +1974,13 @@ def frame_worker(frame_id):
     if combo > 0:
         combo_center_y = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
         play_center_x = play_x + play_width // 2
-        combo_age = max(0, map_time - combo_changed_at) if combo_changed_at is not None else 300
-        combo_vertical_scale = 1.0 + 0.4 * max(0.0, 1.0 - combo_age / 300.0)
-        combo_alpha = min(1.0, combo_age / 120.0)
+        combo_age = max(0, map_time - combo_changed_at) if combo_changed_at is not None else 200
+        bounce = 1.0
+
+        if combo_age < 160:
+            bounce += 0.12 * np.sin(np.pi * combo_age / 160.0)
+
+        combo_scale = skin_scale * 0.72 * bounce
         combo_tint = None
         combo_colours = cfg.get("combo_colours", [])
 
@@ -1634,15 +1997,13 @@ def frame_worker(frame_id):
             play_center_x,
             combo_center_y,
             cfg.get("combo_overlap", 0),
-            skin_scale,
+            combo_scale,
             vertical_anchor="center",
-            vertical_scale=combo_vertical_scale,
-            alpha=combo_alpha,
             tint=combo_tint,
         )
 
         if not native_combo_drawn:
-            draw_ui_text(frame, str(combo), (play_center_x, combo_center_y), 0.8 * ui_scale, anchor="center")
+            draw_ui_text(frame, str(combo), (play_center_x, combo_center_y), 0.58 * ui_scale * bounce, anchor="center")
 
     if show_side_overlay:
         right_x = width - int(24 * ui_scale)
@@ -1682,6 +2043,10 @@ def frame_worker(frame_id):
     write_render_frame(output_dir, frame_id, frame)
 
     return frame_id
+
+
+def frame_batch_worker(frame_ids):
+    return [frame_worker(frame_id) for frame_id in frame_ids]
 
 
 def make_audio_args(speed_multiplier, nightcore_pitch):
@@ -1936,7 +2301,8 @@ def render_video(
     if progress_callback:
         progress_callback(0, "Preparing render: analysing replay timing...")
 
-    events = get_replay_events(replay_file, beatmap.keys) if replay_file else []
+    raw_events = get_replay_events(replay_file, beatmap.keys) if replay_file else []
+    events = raw_events
     replay = get_replay(replay_file) if replay_file else None
     replay_accuracy = get_stable_mania_accuracy(replay_file) if replay_file else 100.0
     target_counts = replay_judgement_counts(replay) if replay else None
@@ -1960,6 +2326,12 @@ def render_video(
     else:
         best_offset, judgements, bad_judgements = 0, [], []
         simulated_accuracy = 100.0
+
+    if judgements:
+        # Judgement matching may apply an automatic timing correction. Stable LN
+        # ticks, however, are driven by the original replay key state at each
+        # beatmap tick, so keep them on the unshifted replay timeline.
+        add_stable_ln_ticks(judgements, notes, raw_events, beatmap.keys, mirror)
 
     counts_reconciled = bool(judgements and target_counts and reconcile_judgements_with_replay(judgements, target_counts))
     bad_judgements = [
@@ -2005,22 +2377,28 @@ def render_video(
     frames_dir.mkdir(parents=True, exist_ok=True)
 
     skin = load_mania_skin(skin_folder, beatmap.keys)
+    results_frame = np.zeros((height, width, 3), dtype=np.uint8)
+    draw_results_screen(
+        results_frame,
+        skin,
+        f"{beatmap.artist} - {beatmap.title} [{beatmap.version}]",
+        beatmap.creator,
+        getattr(replay, "username", "Unknown") if replay else "Unknown",
+        mod_settings["mods"],
+        final_counts,
+        simulated_accuracy,
+        replay_max_combo,
+        replay_score,
+        final_pp,
+        rank,
+        replay_perfect,
+        results_background,
+    )
+    results_frame.flags.writeable = False
 
-    event_lanes = []
-
-    for lane in range(beatmap.keys):
-        lane_events = []
-
-        for event in events:
-            event_lane = beatmap.keys - 1 - event["lane"] if mirror else event["lane"]
-
-            if event_lane == lane:
-                lane_events.append((event["time"], event["pressed"]))
-
-        event_lanes.append((
-            [event_time for event_time, _ in lane_events],
-            [pressed for _, pressed in lane_events],
-        ))
+    # Replay key bits already represent physical lanes after applying Mirror.
+    # Mirroring them again would light the opposite key in the overlay.
+    event_lanes = build_event_lanes(events, beatmap.keys)
 
     judgement_lookup = {
         (j["lane"], j["kind"], j["time"]): j
@@ -2092,6 +2470,7 @@ def render_video(
         "replay_rank": rank,
         "difficulty_profile": difficulty_profile,
         "results_background": results_background,
+        "results_frame": results_frame,
         "show_side_overlay": bool(show_side_overlay),
         "show_strain_graph": bool(show_strain_graph),
         "colour_combo_during_holds": bool(colour_combo_during_holds),
@@ -2136,22 +2515,27 @@ def render_video(
     with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(ctx,)) as executor:
         next_frame = 0
         futures = set()
-        max_pending = workers * 3
+        batch_size = 4
+        max_pending = workers * 2
+
+        def submit_batch(start):
+            stop = min(total_frames, start + batch_size)
+            return executor.submit(frame_batch_worker, range(start, stop)), stop
 
         while next_frame < total_frames and len(futures) < max_pending:
-            futures.add(executor.submit(frame_worker, next_frame))
-            next_frame += 1
+            future, next_frame = submit_batch(next_frame)
+            futures.add(future)
 
         while futures:
             completed, futures = wait(futures, return_when=FIRST_COMPLETED)
 
             for future in completed:
-                future.result()
-                done += 1
+                rendered = future.result()
+                done += len(rendered)
 
                 if next_frame < total_frames:
-                    futures.add(executor.submit(frame_worker, next_frame))
-                    next_frame += 1
+                    new_future, next_frame = submit_batch(next_frame)
+                    futures.add(new_future)
 
                 elapsed = time.time() - start
                 render_fps = done / elapsed if elapsed > 0 else 0
@@ -2200,7 +2584,7 @@ def render_video(
         cmd += [
             "-c:v", "copy",
             "-c:a", "aac",
-            "-shortest",
+            "-t", str(total_frames / fps),
             output_file,
         ]
     else:

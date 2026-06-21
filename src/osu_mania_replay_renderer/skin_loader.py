@@ -6,7 +6,15 @@ def read_image(path):
     if not path:
         return None
 
-    return cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+    image = cv2.imread(str(path), cv2.IMREAD_UNCHANGED)
+
+    if image is not None:
+        # Skin textures are immutable after loading. Marking them read-only lets
+        # renderer workers safely cache resized copies without caching temporary
+        # tinted/animated images.
+        image.flags.writeable = False
+
+    return image
 
 
 def restore_alpha_from_rgb(img):
@@ -325,6 +333,8 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "ranking_elements": {},
         "ranking_element_densities": {},
         "ranking_hit_images": {},
+        "mod_icons": {},
+        "mod_icon_densities": {},
         "combo_glyphs": {},
         "score_glyphs": {},
     }
@@ -392,12 +402,12 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         skin["ranking_element_densities"][element] = 2.0 if path and "@2x" in path.stem.lower() else 1.0
 
     ranking_hit_names = {
-        "300g": "hit300g",
-        "300": "hit300",
-        "200": "hit300k",
-        "100": "hit100",
-        "50": "hit50",
-        "0": "hit0",
+        "300g": "mania-hit300g",
+        "300": "mania-hit300",
+        "200": "mania-hit200",
+        "100": "mania-hit100",
+        "50": "mania-hit50",
+        "0": "mania-hit0",
     }
 
     for key, name in ranking_hit_names.items():
@@ -413,9 +423,27 @@ def load_mania_skin(skin_folder: str | None, keys: int):
 
         skin["ranking_hit_images"][key] = variants
 
+    mod_icon_names = {
+        "DT": "doubletime",
+        "NC": "nightcore",
+        "HT": "halftime",
+        "EZ": "easy",
+        "HR": "hardrock",
+        "HD": "hidden",
+        "FI": "fadein",
+        "FL": "flashlight",
+        "NF": "nofail",
+    }
+
+    for acronym, name in mod_icon_names.items():
+        path = find_image(folder, f"selection-mod-{name}")
+        skin["mod_icons"][acronym] = read_image(path)
+        skin["mod_icon_densities"][acronym] = 2.0 if path and "@2x" in path.stem.lower() else 1.0
+
     def load_font_glyphs(prefix, characters):
         glyphs = {}
         suffix_names = {".": "dot", ",": "comma", "%": "percent"}
+        prefix = (prefix or "score").strip().replace("\\", "/")
 
         for character in characters:
             variants = {}
@@ -424,7 +452,9 @@ def load_mania_skin(skin_folder: str | None, keys: int):
             for density, suffix in ((1.0, ".png"), (2.0, "@2x.png")):
                 path = resolve_case_insensitive(folder / f"{prefix}-{suffix_name}{suffix}")
 
-                if not path.exists() and prefix == cfg.get("score_prefix"):
+                # Punctuation is commonly kept in the skin root even when the
+                # digit prefix lives in a subdirectory.
+                if not path.exists() and (prefix.lower() == "score" or character in "x,.%"):
                     path = resolve_case_insensitive(folder / f"score-{suffix_name}{suffix}")
 
                 if path.exists():
@@ -440,9 +470,6 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     for value in ("0", "50", "100", "200", "300", "300g"):
         image_name = images.get(f"Hit{value}")
         skin["hit_images"][value] = read_image(find_image(folder, image_name))
-
-    if skin["hit_images"].get("300g") is None:
-        skin["hit_images"]["300g"] = skin["hit_images"].get("300")
 
     for lane in range(keys):
         if skin["ln_bodies"][lane] is None:
