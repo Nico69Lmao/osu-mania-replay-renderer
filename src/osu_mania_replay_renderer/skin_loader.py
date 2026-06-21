@@ -321,6 +321,7 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "keys": [None] * keys,
         "keys_down": [None] * keys,
         "hit_images": {},
+        "hit_image_densities": {},
         "stage_left": None,
         "stage_right": None,
         "stage_bottom": None,
@@ -359,6 +360,7 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     skin["keys"] = []
     skin["keys_down"] = []
     skin["hit_images"] = {}
+    skin["hit_image_densities"] = {}
 
     for lane in range(keys):
         note = images.get(f"NoteImage{lane}")
@@ -469,7 +471,9 @@ def load_mania_skin(skin_folder: str | None, keys: int):
 
     for value in ("0", "50", "100", "200", "300", "300g"):
         image_name = images.get(f"Hit{value}")
-        skin["hit_images"][value] = read_image(find_image(folder, image_name))
+        image_path = find_image(folder, image_name)
+        skin["hit_images"][value] = read_image(image_path)
+        skin["hit_image_densities"][value] = 2.0 if image_path and "@2x" in image_path.stem.lower() else 1.0
 
     for lane in range(keys):
         if skin["ln_bodies"][lane] is None:

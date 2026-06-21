@@ -19,7 +19,8 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Includes selectable side statistics, strain graph, vignette strength, results background opacity, results duration, and results-screen visibility.
 - Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
 - Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
-- Generates frames in parallel and stores temporary frames as quality-98 JPEG files for faster disk I/O.
+- Generates frames in parallel into batched MJPEG streams, avoiding thousands of temporary files and reducing disk overhead.
+- Ships as a Windows `.exe` and Linux AppImage, with a built-in release update check.
 
 ## Project Files
 
@@ -52,7 +53,16 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 
 ## Installation
 
-Python 3.11 or newer, `uv`, and FFmpeg are recommended.
+Download the `.exe` or AppImage from the repository Releases page. FFmpeg is included in both packages; an installed system FFmpeg is preferred automatically when it provides hardware encoders.
+
+To run the AppImage:
+
+```bash
+chmod +x osu-mania-replay-renderer-*-Linux-x86_64.AppImage
+./osu-mania-replay-renderer-*-Linux-x86_64.AppImage
+```
+
+For development, Python 3.11 or newer and `uv` are required:
 
 ```bash
 uv sync
@@ -132,6 +142,18 @@ The encoder order is:
 4. CPU `libx264`
 
 The selected encoder and every failed attempt are recorded in the debug report.
+
+## Releases and Remote Updates
+
+Pushing a version tag such as `v0.2.0` starts the GitHub Actions release workflow. Windows builds the native one-file `.exe`, Linux builds the AppImage, and both files are attached to the GitHub release automatically.
+
+For later versions, start from a clean working tree and run:
+
+```bash
+python scripts/publish_release.py 0.2.1
+```
+
+This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. Because this repository is private, the in-app update checker needs authenticated GitHub access; set `MANIA_RENDERER_GITHUB_TOKEN` to a token that can read the repository. The button then detects the platform-specific release and opens its download page in the browser.
 
 ## Debug Report
 

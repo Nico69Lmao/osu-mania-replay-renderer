@@ -18,6 +18,8 @@ from osu_mania_replay_renderer.osu_db_reader import read_mania_star_rating
 
 CTX = {}
 RESIZE_CACHE = {}
+FRAME_STREAM = None
+FFMPEG_BINARY = None
 MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
 
@@ -58,9 +60,24 @@ def draw_song_header(frame, title, mapper, player, bar_height=None):
     title_y = max(int(22 * ui_scale), int(bar_height * 0.43))
     draw_ui_text(frame, title, (int(12 * ui_scale), title_y), title_scale, (246, 246, 248), 1)
 
-    details = f"Beatmap by {mapper}  |  Played by {player}"
-    details_y = bar_height - int(14 * ui_scale)
-    draw_ui_text(frame, details, (int(12 * ui_scale), details_y), 0.56 * ui_scale, (215, 218, 224), 1)
+    beatmap_y = bar_height - int(39 * ui_scale)
+    player_y = bar_height - int(12 * ui_scale)
+    draw_ui_text(
+        frame,
+        f"Beatmap by {mapper}",
+        (int(12 * ui_scale), beatmap_y),
+        0.70 * ui_scale,
+        (240, 242, 246),
+        1,
+    )
+    draw_ui_text(
+        frame,
+        f"Played by {player}",
+        (int(12 * ui_scale), player_y),
+        0.60 * ui_scale,
+        (215, 218, 224),
+        1,
+    )
     cv2.line(
         frame,
         (0, bar_height - 1),
@@ -351,42 +368,6 @@ def measure_skin_text(text, glyphs, overlap, coordinate_scale, frame_height):
 
     overlap_px = int(overlap * coordinate_scale)
     return sum(widths) - overlap_px * max(0, len(widths) - 1), max(heights)
-
-
-def draw_skin_percent_fallback(frame, glyphs, x, top_y, coordinate_scale):
-    """Build a percent sign from the skin's zero glyph when no % exists."""
-    dot, density = select_skin_glyph(glyphs.get("0", {}), frame.shape[0])
-
-    if dot is None:
-        return None
-
-    bbox = alpha_bbox(dot)
-
-    if not bbox:
-        return None
-
-    x1, y1, x2, y2 = bbox
-    dot = dot[y1:y2, x1:x2]
-    scale = coordinate_scale / density
-    dot_w = max(3, int(dot.shape[1] * scale * 0.42))
-    dot_h = max(3, int(dot.shape[0] * scale * 0.42))
-    symbol_w = max(dot_w * 3, int(14 * coordinate_scale))
-    symbol_h = max(dot_h * 4, int(20 * coordinate_scale))
-    top_dot_x = int(x + symbol_w - dot_w)
-    bottom_dot_y = int(top_y + symbol_h - dot_h)
-    paste_rgba(frame, dot, top_dot_x, int(top_y), dot_w, dot_h)
-    paste_rgba(frame, dot, int(x), bottom_dot_y, dot_w, dot_h)
-    rgb = dominant_visible_colour(dot) or (245, 245, 248)
-    bgr = (rgb[2], rgb[1], rgb[0])
-    cv2.line(
-        frame,
-        (int(x + dot_w), int(top_y + symbol_h - dot_h)),
-        (int(x + symbol_w - dot_w), int(top_y + dot_h)),
-        bgr,
-        max(1, int(1.2 * coordinate_scale)),
-        cv2.LINE_AA,
-    )
-    return symbol_w, symbol_h
 
 
 def paste_ln_body(frame, img, cx, top_y, bottom_y, target_width):
@@ -1004,27 +985,14 @@ def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane
     img = skin.get("hit_images", {}).get(key)
 
     if img is not None and has_visible_alpha(img):
-        bbox = alpha_bbox(img)
-
-        if bbox:
-            x1, y1, x2, y2 = bbox
-            img = img[y1:y2, x1:x2]
-
-        target_h = max(1, int((8 if key == "300g" else 14) * skin_scale))
-        target_w = max(1, int(img.shape[1] * target_h / max(1, img.shape[0])))
-        max_w = max(1, int(100 * skin_scale))
-
-        if target_w > max_w:
-            target_h = max(1, int(target_h * max_w / target_w))
-            target_w = max_w
-
-        paste_rgba_centered_sized(
+        density = skin.get("hit_image_densities", {}).get(key, 1.0)
+        resolution_scale = frame.shape[0] / 768.0 / max(1.0, density)
+        paste_rgba_centered(
             frame,
             img,
             play_center_x,
             judgement_y,
-            target_w,
-            target_h,
+            scale=resolution_scale,
         )
 
 
@@ -1614,26 +1582,29 @@ def draw_results_screen(
     if not draw_skin_text(frame, str(max_combo), score_glyphs, 140 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
         draw_ui_text(frame, str(max_combo), (int(145 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
 
-    accuracy_text = f"{accuracy:.2f}%"
+    accuracy_number = f"{accuracy:.2f}"
+    accuracy_metrics = measure_skin_text(accuracy_number, score_glyphs, score_overlap, interface_scale, height)
 
-    if not draw_skin_text(frame, accuracy_text, score_glyphs, 430 * interface_scale, 540 * interface_scale, score_overlap, interface_scale):
-        accuracy_number = f"{accuracy:.2f}"
-        accuracy_metrics = measure_skin_text(accuracy_number, score_glyphs, score_overlap, interface_scale, height)
-
-        if accuracy_metrics:
-            number_w, _ = accuracy_metrics
-            percent_w = int(14 * interface_scale)
-            gap = int(6 * interface_scale)
-            group_w = number_w + gap + percent_w
-            group_x = int(430 * interface_scale - group_w / 2)
-            number_center_x = group_x + number_w / 2
-            accuracy_y = int(540 * interface_scale)
-            draw_skin_text(frame, accuracy_number, score_glyphs, number_center_x, accuracy_y, score_overlap, interface_scale)
-
-            if draw_skin_percent_fallback(frame, score_glyphs, group_x + number_w + gap, accuracy_y, interface_scale) is None:
-                draw_ui_text(frame, "%", (group_x + number_w + gap, accuracy_y + int(20 * interface_scale)), 0.56 * text_scale, (250, 250, 252), 1)
-        else:
-            draw_ui_text(frame, accuracy_text, (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (250, 250, 252), 1, "center")
+    if accuracy_metrics:
+        number_w, number_h = accuracy_metrics
+        suffix_scale = 0.82 * interface_scale
+        (percent_w, percent_h), _ = cv2.getTextSize("%", cv2.FONT_HERSHEY_SIMPLEX, suffix_scale, 1)
+        gap = int(8 * interface_scale)
+        group_w = number_w + gap + percent_w
+        group_x = int(430 * interface_scale - group_w / 2)
+        number_center_x = group_x + number_w / 2
+        accuracy_y = int(540 * interface_scale)
+        draw_skin_text(frame, accuracy_number, score_glyphs, number_center_x, accuracy_y, score_overlap, interface_scale)
+        draw_ui_text(
+            frame,
+            "%",
+            (group_x + number_w + gap, accuracy_y + max(number_h, percent_h)),
+            suffix_scale,
+            (255, 255, 255),
+            1,
+        )
+    else:
+        draw_ui_text(frame, f"{accuracy_number}%", (int(430 * interface_scale), int(575 * interface_scale)), 0.68 * text_scale, (255, 255, 255), 1, "center")
 
     if not draw_skin_text(frame, f"{score:07d}", score_glyphs, 354 * interface_scale, 130 * interface_scale, score_overlap, interface_scale):
         draw_ui_text(frame, f"{score:,}", (int(354 * interface_scale), int(160 * interface_scale)), 0.72 * text_scale, (250, 250, 252), 1, "center")
@@ -1670,6 +1641,19 @@ def draw_results_screen(
 
 
 def write_render_frame(output_dir, frame_id, frame):
+    if FRAME_STREAM is not None:
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [cv2.IMWRITE_JPEG_QUALITY, 94],
+        )
+
+        if not ok:
+            raise RuntimeError(f"Could not encode frame {frame_id}")
+
+        FRAME_STREAM.write(memoryview(encoded))
+        return
+
     out = Path(output_dir) / f"frame_{frame_id:07d}.jpg"
     cv2.imwrite(
         str(out),
@@ -2046,7 +2030,25 @@ def frame_worker(frame_id):
 
 
 def frame_batch_worker(frame_ids):
-    return [frame_worker(frame_id) for frame_id in frame_ids]
+    global FRAME_STREAM
+
+    frame_ids = list(frame_ids)
+
+    if not frame_ids:
+        return 0, 0, ""
+
+    segment_path = Path(CTX["segments_dir"]) / f"segment_{frame_ids[0]:07d}.mjpg"
+
+    with open(segment_path, "wb", buffering=1024 * 1024) as stream:
+        FRAME_STREAM = stream
+
+        try:
+            for frame_id in frame_ids:
+                frame_worker(frame_id)
+        finally:
+            FRAME_STREAM = None
+
+    return frame_ids[0], frame_ids[-1] + 1, str(segment_path)
 
 
 def make_audio_args(speed_multiplier, nightcore_pitch):
@@ -2065,10 +2067,51 @@ def make_audio_args(speed_multiplier, nightcore_pitch):
     return ["-filter:a", f"atempo={speed_multiplier},apad"]
 
 
+def ffmpeg_binary():
+    global FFMPEG_BINARY
+
+    if FFMPEG_BINARY:
+        return FFMPEG_BINARY
+
+    candidates = []
+    configured = os.environ.get("MANIA_RENDERER_FFMPEG")
+
+    if configured:
+        candidates.append(configured)
+
+    system_ffmpeg = shutil.which("ffmpeg")
+
+    if system_ffmpeg:
+        candidates.append(system_ffmpeg)
+
+    try:
+        import imageio_ffmpeg
+        candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
+    except Exception:
+        pass
+
+    for candidate in dict.fromkeys(candidates):
+        try:
+            subprocess.run(
+                [candidate, "-version"],
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            FFMPEG_BINARY = candidate
+            return candidate
+        except (OSError, subprocess.CalledProcessError):
+            continue
+
+    raise RuntimeError(
+        "FFmpeg was not found. Reinstall the application or set MANIA_RENDERER_FFMPEG."
+    )
+
+
 def ffmpeg_encoder_names():
     try:
         result = subprocess.run(
-            ["ffmpeg", "-hide_banner", "-encoders"],
+            [ffmpeg_binary(), "-hide_banner", "-encoders"],
             check=True,
             capture_output=True,
             text=True,
@@ -2086,18 +2129,20 @@ def vaapi_device():
     return None
 
 
-def video_encode_commands(fps, frames_dir, silent_video):
+def video_encode_commands(fps, frame_stream, silent_video):
     encoders = ffmpeg_encoder_names()
     input_args = [
+        "-f", "mjpeg",
         "-framerate", str(fps),
-        "-i", str(frames_dir / "frame_%07d.jpg"),
+        "-i", str(frame_stream),
     ]
+    ffmpeg = ffmpeg_binary()
 
     device = vaapi_device()
 
     if device and "h264_vaapi" in encoders:
         yield [
-            "ffmpeg", "-y",
+            ffmpeg, "-y",
             "-vaapi_device", device,
             *input_args,
             "-vf", "format=nv12,hwupload",
@@ -2108,7 +2153,7 @@ def video_encode_commands(fps, frames_dir, silent_video):
 
     if "h264_qsv" in encoders:
         yield [
-            "ffmpeg", "-y",
+            ffmpeg, "-y",
             *input_args,
             "-vf", "format=nv12",
             "-c:v", "h264_qsv",
@@ -2118,7 +2163,7 @@ def video_encode_commands(fps, frames_dir, silent_video):
 
     if "h264_amf" in encoders:
         yield [
-            "ffmpeg", "-y",
+            ffmpeg, "-y",
             *input_args,
             "-c:v", "h264_amf",
             "-quality", "quality",
@@ -2128,7 +2173,7 @@ def video_encode_commands(fps, frames_dir, silent_video):
         ]
 
     yield [
-        "ffmpeg", "-y",
+        ffmpeg, "-y",
         *input_args,
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
@@ -2138,11 +2183,11 @@ def video_encode_commands(fps, frames_dir, silent_video):
     ]
 
 
-def encode_silent_video(fps, frames_dir, silent_video, progress_callback=None):
+def encode_silent_video(fps, frame_stream, silent_video, progress_callback=None):
     last_error = None
     attempts = []
 
-    for cmd in video_encode_commands(fps, frames_dir, silent_video):
+    for cmd in video_encode_commands(fps, frame_stream, silent_video):
         encoder = cmd[cmd.index("-c:v") + 1]
 
         if progress_callback:
@@ -2373,8 +2418,8 @@ def render_video(
         )
 
     temp_dir = Path(tempfile.mkdtemp(prefix=".mania-render-", dir=str(Path(output_file).parent)))
-    frames_dir = temp_dir / "frames"
-    frames_dir.mkdir(parents=True, exist_ok=True)
+    segments_dir = temp_dir / "segments"
+    segments_dir.mkdir(parents=True, exist_ok=True)
 
     skin = load_mania_skin(skin_folder, beatmap.keys)
     results_frame = np.zeros((height, width, 3), dtype=np.uint8)
@@ -2445,7 +2490,10 @@ def render_video(
         "mapper": beatmap.creator,
         "player": getattr(replay, "username", "Unknown") if replay else "Unknown",
         "mods": mod_settings["mods"],
-        "output_dir": str(frames_dir),
+        # output_dir remains available for direct single-frame tests; normal
+        # renders stream each worker batch into a contiguous MJPEG segment.
+        "output_dir": str(temp_dir),
+        "segments_dir": str(segments_dir),
         "scroll_time_ms": scroll_time_ms,
         "motion_blur": int(motion_blur),
         "speed_multiplier": speed_multiplier,
@@ -2515,8 +2563,9 @@ def render_video(
     with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(ctx,)) as executor:
         next_frame = 0
         futures = set()
-        batch_size = 4
+        batch_size = max(8, min(30, total_frames // max(1, workers * 8)))
         max_pending = workers * 2
+        segments = []
 
         def submit_batch(start):
             stop = min(total_frames, start + batch_size)
@@ -2530,8 +2579,9 @@ def render_video(
             completed, futures = wait(futures, return_when=FIRST_COMPLETED)
 
             for future in completed:
-                rendered = future.result()
-                done += len(rendered)
+                segment_start, segment_stop, segment_path = future.result()
+                done += segment_stop - segment_start
+                segments.append((segment_start, segment_path))
 
                 if next_frame < total_frames:
                     new_future, next_frame = submit_batch(next_frame)
@@ -2547,9 +2597,20 @@ def render_video(
                         f"Frame: {done}/{total_frames} | Render: {render_fps:.1f} fps | ETA: {remaining}s"
                     )
 
+    frame_stream = temp_dir / "frames.mjpg"
+
+    if progress_callback:
+        progress_callback(85, "Joining frame stream...")
+
+    with open(frame_stream, "wb", buffering=4 * 1024 * 1024) as output_stream:
+        for _, segment_path in sorted(segments):
+            with open(segment_path, "rb") as segment_stream:
+                shutil.copyfileobj(segment_stream, output_stream, length=4 * 1024 * 1024)
+
+    shutil.rmtree(segments_dir)
     silent_video = temp_dir / "silent.mp4"
 
-    encoder_cmd, encoder_attempts = encode_silent_video(fps, frames_dir, silent_video, progress_callback)
+    encoder_cmd, encoder_attempts = encode_silent_video(fps, frame_stream, silent_video, progress_callback)
     debug_path = Path(output_file).with_suffix(".debug.json")
 
     if debug_path.exists():
@@ -2573,7 +2634,7 @@ def render_video(
 
     if audio_path.exists():
         cmd = [
-            "ffmpeg", "-y",
+            ffmpeg_binary(), "-y",
             "-i", str(silent_video),
             "-ss", str(start_map_time / 1000),
             "-i", str(audio_path),
@@ -2588,7 +2649,7 @@ def render_video(
             output_file,
         ]
     else:
-        cmd = ["ffmpeg", "-y", "-i", str(silent_video), "-c:v", "copy", output_file]
+        cmd = [ffmpeg_binary(), "-y", "-i", str(silent_video), "-c:v", "copy", output_file]
 
     subprocess.run(cmd, check=True)
     shutil.rmtree(temp_dir)

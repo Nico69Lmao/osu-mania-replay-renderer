@@ -1,6 +1,7 @@
 from pathlib import Path
 
-from PySide6.QtCore import QThread, Signal, Qt
+from PySide6.QtCore import QThread, Signal, Qt, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -24,6 +25,8 @@ from PySide6.QtWidgets import (
 from osu_mania_replay_renderer.osu_finder import list_skins, find_beatmap_from_replay, get_replay_info
 from osu_mania_replay_renderer.renderer import render_video
 from osu_mania_replay_renderer.settings import load_settings, update_setting
+from osu_mania_replay_renderer.updater import check_for_update
+from osu_mania_replay_renderer.version import __version__
 
 
 def setting_bool(value):
@@ -61,6 +64,17 @@ class RenderThread(QThread):
             self.failed.emit(str(error))
 
 
+class UpdateCheckThread(QThread):
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def run(self):
+        try:
+            self.completed.emit(check_for_update())
+        except Exception as error:
+            self.failed.emit(str(error))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -73,6 +87,7 @@ class MainWindow(QMainWindow):
         self.beatmap_file = self.settings["last_beatmap"] or None
         self.skin_folder = None
         self.thread = None
+        self.update_thread = None
 
         self._build_ui()
         self._apply_style()
@@ -89,7 +104,7 @@ class MainWindow(QMainWindow):
 
         title = QLabel("osu!mania Replay Renderer")
         title.setObjectName("pageTitle")
-        subtitle = QLabel("Render local osu!mania replays with legacy skin support")
+        subtitle = QLabel(f"Render local osu!mania replays with legacy skin support  •  v{__version__}")
         subtitle.setObjectName("pageSubtitle")
         root_layout.addWidget(title)
         root_layout.addWidget(subtitle)
@@ -244,9 +259,13 @@ class MainWindow(QMainWindow):
         self.render_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.render_button.clicked.connect(self.start_render)
 
+        self.update_button = QPushButton("Check for updates")
+        self.update_button.clicked.connect(self.check_updates)
+
         layout.addWidget(self.progress)
         layout.addWidget(self.progress_label)
         layout.addWidget(self.render_button)
+        layout.addWidget(self.update_button)
         return group
 
     def _apply_style(self):
@@ -491,3 +510,38 @@ class MainWindow(QMainWindow):
         self.render_button.setEnabled(True)
         self.progress_label.setText("Render failed")
         QMessageBox.critical(self, "Render error", error)
+
+    def check_updates(self):
+        if self.update_thread and self.update_thread.isRunning():
+            return
+
+        self.update_button.setEnabled(False)
+        self.update_button.setText("Checking...")
+        self.update_thread = UpdateCheckThread(self)
+        self.update_thread.completed.connect(self.update_check_done)
+        self.update_thread.failed.connect(self.update_check_failed)
+        self.update_thread.start()
+
+    def update_check_done(self, update):
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check for updates")
+
+        if update is None:
+            QMessageBox.information(self, "Updates", "You already have the latest version.")
+            return
+
+        answer = QMessageBox.question(
+            self,
+            "Update available",
+            f"Version {update.version} is available.\n\nOpen the GitHub release to download {update.asset_name}?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if answer == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(update.release_url))
+
+    def update_check_failed(self, error):
+        self.update_button.setEnabled(True)
+        self.update_button.setText("Check for updates")
+        QMessageBox.warning(self, "Update check failed", error)

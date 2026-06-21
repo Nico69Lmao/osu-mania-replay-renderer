@@ -8,3 +8,8 @@ Output_Test/
 venv/
 .venv/
 .mania-render-*/
+AppDir/
+build/
+dist/
+*.AppImage
+*.spec

@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=osu!mania Replay Renderer
+Comment=Render osu!mania replays to MP4
+Exec=osu-mania-replay-renderer
+Icon=osu-mania-replay-renderer
+Categories=AudioVideo;Game;
+Terminal=false
