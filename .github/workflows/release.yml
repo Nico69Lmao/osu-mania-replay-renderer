@@ -4,6 +4,15 @@ on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing version tag to publish
+        required: true
+        type: string
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: write
@@ -24,7 +33,7 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: |
-          $version = "${{ github.ref_name }}".TrimStart("v")
+          $version = "$env:RELEASE_TAG".TrimStart("v")
           uv run pyinstaller --noconfirm --clean --onefile --windowed `
             --name osu-mania-replay-renderer `
             --paths src `
@@ -59,7 +68,7 @@ jobs:
             src/osu_mania_replay_renderer/__main__.py
       - name: Build AppImage
         run: |
-          version="${GITHUB_REF_NAME#v}"
+          version="${RELEASE_TAG#v}"
           mkdir -p AppDir/usr/bin
           cp -a dist/osu-mania-replay-renderer/. AppDir/usr/bin/
           cp packaging/linux/AppRun AppDir/AppRun
@@ -88,4 +97,4 @@ jobs:
       - name: Publish GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
-        run: gh release create "$GITHUB_REF_NAME" artifacts/* --verify-tag --generate-notes
+        run: gh release create "$RELEASE_TAG" artifacts/* --verify-tag --generate-notes
