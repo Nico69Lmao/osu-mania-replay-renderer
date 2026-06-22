@@ -1,4 +1,6 @@
 import multiprocessing as mp
+import os
+import platform
 import sys
 
 
@@ -13,6 +15,9 @@ def main():
 
         print("multiprocessing smoke test passed")
         return
+
+    if platform.system().lower() == "linux":
+        os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
 
     from PySide6.QtWidgets import QApplication
     from osu_mania_replay_renderer.gui import MainWindow

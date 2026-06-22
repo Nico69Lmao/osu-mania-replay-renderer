@@ -25,6 +25,28 @@ MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
 
 
+class RenderCancelled(RuntimeError):
+    pass
+
+
+def ensure_not_cancelled(cancel_callback):
+    if cancel_callback and cancel_callback():
+        raise RenderCancelled("Render cancelled")
+
+
+def terminate_process_pool(executor, futures):
+    for future in futures:
+        future.cancel()
+
+    processes = list((getattr(executor, "_processes", None) or {}).values())
+
+    for process in processes:
+        if process.is_alive():
+            process.terminate()
+
+    executor.shutdown(wait=True, cancel_futures=True)
+
+
 def draw_ui_text(frame, text, origin, scale=0.6, color=(235, 235, 235), thickness=1, anchor="left"):
     """Draw readable antialiased overlay text with a subtle dark edge."""
     font = cv2.FONT_HERSHEY_SIMPLEX
@@ -97,6 +119,21 @@ def format_clock(milliseconds):
 
 def overlay_scale(height):
     return max(0.58, min(1.8, height / 900))
+
+
+def layout_point(layout_positions, key, width, height):
+    value = (layout_positions or {}).get(key)
+
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        return None
+
+    try:
+        x = max(0.0, min(1.0, float(value[0])))
+        y = max(0.0, min(1.0, float(value[1])))
+    except (TypeError, ValueError):
+        return None
+
+    return int(x * width), int(y * height)
 
 
 def resize_texture(img, width, height, interpolation=cv2.INTER_AREA):
@@ -974,7 +1011,18 @@ def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
     paste_rgba(frame, stage_bottom, cover_x, cover_y, cover_w, cover_h)
 
 
-def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane_xs, column_widths, judge_y, note_widths):
+def draw_hit_judgements(
+    frame,
+    skin,
+    judgements,
+    judgement_times,
+    map_time,
+    lane_xs,
+    column_widths,
+    judge_y,
+    note_widths,
+    custom_position=None,
+):
     if not lane_xs:
         return
 
@@ -984,6 +1032,9 @@ def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane
     score_position = cfg.get("score_position") if cfg.get("score_position") is not None else 300
     combo_position = cfg.get("combo_position") if cfg.get("combo_position") is not None else 111
     judgement_y = int(max(score_position, combo_position + 50) * skin_scale)
+
+    if custom_position is not None:
+        play_center_x, judgement_y = custom_position
     latest_i = bisect_right(judgement_times, map_time) - 1
 
     # Stable LN combo ticks are internal combo events, not hit judgements. Do
@@ -1016,7 +1067,7 @@ def draw_hit_judgements(frame, skin, judgements, judgement_times, map_time, lane
         )
 
 
-def draw_judgement_counter(frame, judgements, map_time, width, top_y):
+def draw_judgement_counter(frame, judgements, map_time, width, top_y, right_x=None):
     counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
 
     for judgement in judgements:
@@ -1041,7 +1092,7 @@ def draw_judgement_counter(frame, judgements, map_time, width, top_y):
     ]
 
     ui_scale = overlay_scale(frame.shape[0])
-    x = width - int(24 * ui_scale)
+    x = right_x if right_x is not None else width - int(24 * ui_scale)
     y = top_y
 
     for label, count, color in labels:
@@ -1095,12 +1146,13 @@ def judgement_counts_at(judgements, map_time):
     return counts
 
 
-def draw_pp_counter(frame, judgements, map_time, width, y, star_rating):
+def draw_pp_counter(frame, judgements, map_time, width, y, star_rating, right_x=None):
     counts = judgement_counts_at(judgements, map_time)
     pp = mania_pp_value(star_rating, counts)
     text = "pp: N/A" if pp is None else f"pp: {pp:.2f}"
     ui_scale = overlay_scale(frame.shape[0])
-    draw_ui_text(frame, text, (width - int(24 * ui_scale), y), 0.56 * ui_scale, (220, 220, 220), 1, "right")
+    x = right_x if right_x is not None else width - int(24 * ui_scale)
+    draw_ui_text(frame, text, (x, y), 0.56 * ui_scale, (220, 220, 220), 1, "right")
 
     return y + int(28 * ui_scale)
 
@@ -1125,7 +1177,7 @@ def stable_key_bpm(times, states, map_time):
     return min(999, int(round(60000.0 / float(np.median(intervals)))))
 
 
-def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
+def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y, custom_position=None):
     ui_scale = overlay_scale(frame.shape[0])
     right_x = width - int(24 * ui_scale)
     window_ms = 1400
@@ -1133,23 +1185,31 @@ def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
     lane_w = max(20, int(27 * ui_scale))
     lane_gap = max(4, int(7 * ui_scale))
     total_w = lane_count * lane_w + (lane_count - 1) * lane_gap
-    x1 = right_x - total_w
-    history_top = y + int(18 * ui_scale)
     history_h = max(112, int(154 * ui_scale))
+    key_h = max(17, int(22 * ui_scale))
+    panel_h = int(18 * ui_scale) + history_h + int(7 * ui_scale) + key_h + int(28 * ui_scale)
+
+    if custom_position is not None:
+        center_x, center_y = custom_position
+        x1 = int(center_x - total_w / 2)
+        y = int(center_y - panel_h / 2)
+        x1 = max(4, min(width - total_w - 4, x1))
+        right_x = x1 + total_w
+    else:
+        x1 = right_x - total_w
+
+    history_top = y + int(18 * ui_scale)
     history_bottom = history_top + history_h
     key_top = history_bottom + int(7 * ui_scale)
-    key_h = max(17, int(22 * ui_scale))
 
-    draw_ui_text(frame, "INPUT / BPM", (right_x, y), 0.42 * ui_scale, (190, 190, 195), 1, "right")
-    overlay = frame.copy()
     cv2.rectangle(
-        overlay,
-        (x1 - int(6 * ui_scale), history_top - int(4 * ui_scale)),
+        frame,
+        (x1 - int(6 * ui_scale), y - int(10 * ui_scale)),
         (right_x + int(5 * ui_scale), key_top + key_h + int(28 * ui_scale)),
-        (12, 12, 15),
+        (0, 0, 0),
         -1,
     )
-    cv2.addWeighted(overlay, 0.58, frame, 0.42, 0, frame)
+    draw_ui_text(frame, "INPUT / BPM", (right_x, y), 0.42 * ui_scale, (190, 190, 195), 1, "right")
 
     for lane, (times, states) in enumerate(event_lanes):
         lane_x = x1 + lane * (lane_w + lane_gap)
@@ -1218,19 +1278,22 @@ def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y):
     return key_top + key_h + int(30 * ui_scale)
 
 
-def draw_star_rating(frame, star_rating, height):
+def draw_star_rating(frame, star_rating, height, custom_position=None):
     text = "SR: N/A" if star_rating is None else f"SR: {star_rating:.2f}*"
     ui_scale = overlay_scale(height)
-    draw_ui_text(frame, text, (int(24 * ui_scale), height - int(140 * ui_scale)), 0.56 * ui_scale)
+    if custom_position is not None:
+        draw_ui_text(frame, text, custom_position, 0.56 * ui_scale, anchor="center")
+    else:
+        draw_ui_text(frame, text, (int(24 * ui_scale), height - int(140 * ui_scale)), 0.56 * ui_scale)
 
 
-def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, y):
+def draw_timeline(frame, map_time, start_map_time, end_map_time, width, height, y, custom_position=None):
     progress = (map_time - start_map_time) / max(1, end_map_time - start_map_time)
     progress = max(0.0, min(1.0, progress))
     ui_scale = overlay_scale(height)
     radius = max(11, int(16 * ui_scale))
     right_x = width - int(24 * ui_scale)
-    center = (right_x - radius, y + radius)
+    center = custom_position if custom_position is not None else (right_x - radius, y + radius)
     thickness = max(2, int(3 * ui_scale))
     cv2.circle(frame, center, radius, (38, 38, 43), -1, cv2.LINE_AA)
 
@@ -1288,7 +1351,18 @@ def build_difficulty_profile(notes, start_time, end_time, sample_count=220):
     return np.clip(smoothed / max(ceiling, 0.001), 0.0, 1.0).tolist()
 
 
-def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width, height, play_x, play_width):
+def draw_difficulty_graph(
+    frame,
+    profile,
+    map_time,
+    start_time,
+    end_time,
+    width,
+    height,
+    play_x,
+    play_width,
+    custom_position=None,
+):
     if not profile:
         return
 
@@ -1296,12 +1370,20 @@ def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width,
     gap = int(28 * ui_scale)
     right_start = play_x + play_width + gap
     max_graph_w = int(416 * ui_scale)
-    x2 = width
-    x1 = max(right_start, width - max_graph_w)
-
     graph_h = max(52, int(82 * ui_scale))
-    y2 = height
-    y1 = y2 - graph_h
+
+    if custom_position is not None:
+        center_x, center_y = custom_position
+        graph_w = min(max_graph_w, width - 8)
+        x1 = max(0, min(width - graph_w, int(center_x - graph_w / 2)))
+        x2 = x1 + graph_w
+        y1 = max(0, min(height - graph_h, int(center_y - graph_h / 2)))
+        y2 = y1 + graph_h
+    else:
+        x2 = width
+        x1 = max(right_start, width - max_graph_w)
+        y2 = height
+        y1 = y2 - graph_h
 
     if x2 - x1 < 100:
         return
@@ -1312,18 +1394,15 @@ def draw_difficulty_graph(frame, profile, map_time, start_time, end_time, width,
     progress = max(0.0, min(1.0, (map_time - start_time) / max(1, end_time - start_time)))
     passed_i = min(len(points) - 1, max(0, int(progress * (len(points) - 1))))
 
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (x1, y1), (x2, y2), (18, 18, 21), -1)
+    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 0, 0), -1)
 
     if passed_i > 0:
         passed_poly = np.vstack((points[:passed_i + 1], [points[passed_i, 0], y2], [x1, y2]))
-        cv2.fillPoly(overlay, [passed_poly], (35, 115, 55))
+        cv2.fillPoly(frame, [passed_poly], (18, 78, 34))
 
     if passed_i < len(points) - 1:
         future_poly = np.vstack(([points[passed_i, 0], y2], points[passed_i:], [x2, y2]))
-        cv2.fillPoly(overlay, [future_poly], (62, 62, 68))
-
-    cv2.addWeighted(overlay, 0.45, frame, 0.55, 0, frame)
+        cv2.fillPoly(frame, [future_poly], (34, 34, 38))
 
     if passed_i > 0:
         cv2.polylines(frame, [points[:passed_i + 1]], False, (70, 220, 100), max(1, int(2 * ui_scale)), cv2.LINE_AA)
@@ -1723,6 +1802,7 @@ def frame_worker(frame_id):
     show_side_overlay = CTX.get("show_side_overlay", True)
     show_strain_graph = CTX.get("show_strain_graph", True)
     colour_combo_during_holds = CTX.get("colour_combo_during_holds", True)
+    layout_positions = CTX.get("layout_positions", {})
     vignette_mask = CTX.get("vignette_mask")
 
     real_elapsed = int(frame_id * 1000 / fps)
@@ -1753,6 +1833,11 @@ def frame_worker(frame_id):
         play_x = int(cfg["column_start"] * scale_x)
     else:
         play_x = (width - play_width) // 2
+
+    custom_playfield = layout_point(layout_positions, "playfield", width, height)
+
+    if custom_playfield is not None:
+        play_x = max(0, min(width - play_width, custom_playfield[0] - play_width // 2))
 
     if cfg["hit_position"] is not None:
         judge_y = int(cfg["hit_position"] * scale_y)
@@ -1955,6 +2040,7 @@ def frame_worker(frame_id):
             height,
             play_x,
             play_width,
+            layout_point(layout_positions, "strain_graph", width, height),
         )
 
     line_colour = skin_colour_to_bgra(cfg["colours"].get("ColourColumnLine")) or (65, 55, 55, 255)
@@ -1973,11 +2059,26 @@ def frame_worker(frame_id):
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
 
     apply_vignette(frame, vignette_mask)
-    draw_hit_judgements(frame, skin, display_judgements, judgement_times, map_time, lane_xs, column_widths, judge_y, note_widths)
+    draw_hit_judgements(
+        frame,
+        skin,
+        display_judgements,
+        judgement_times,
+        map_time,
+        lane_xs,
+        column_widths,
+        judge_y,
+        note_widths,
+        layout_point(layout_positions, "judgement", width, height),
+    )
 
     if combo > 0:
         combo_center_y = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
         play_center_x = play_x + play_width // 2
+        custom_combo = layout_point(layout_positions, "combo", width, height)
+
+        if custom_combo is not None:
+            play_center_x, combo_center_y = custom_combo
         combo_age = max(0, map_time - combo_changed_at) if combo_changed_at is not None else 200
         bounce = 1.0
 
@@ -2010,13 +2111,14 @@ def frame_worker(frame_id):
             draw_ui_text(frame, str(combo), (play_center_x, combo_center_y), 0.58 * ui_scale * bounce, anchor="center")
 
     if show_side_overlay:
-        right_x = width - int(24 * ui_scale)
-        stats_y = int(72 * ui_scale)
+        custom_stats = layout_point(layout_positions, "side_stats", width, height)
+        right_x = custom_stats[0] if custom_stats is not None else width - int(24 * ui_scale)
+        stats_y = custom_stats[1] if custom_stats is not None else int(72 * ui_scale)
         draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
         stats_y += int(32 * ui_scale)
         draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
         stats_y += int(38 * ui_scale)
-        stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y)
+        stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y, right_x)
         stats_y = draw_pp_counter(
             frame,
             judgements,
@@ -2024,6 +2126,7 @@ def frame_worker(frame_id):
             width,
             stats_y + int(10 * ui_scale),
             star_rating,
+            right_x,
         )
         stats_y = draw_key_input_overlay(
             frame,
@@ -2032,6 +2135,7 @@ def frame_worker(frame_id):
             map_time,
             width,
             stats_y + int(8 * ui_scale),
+            layout_point(layout_positions, "key_input", width, height),
         )
         draw_timeline(
             frame,
@@ -2041,8 +2145,14 @@ def frame_worker(frame_id):
             width,
             height,
             stats_y + int(8 * ui_scale),
+            layout_point(layout_positions, "timeline", width, height),
         )
-        draw_star_rating(frame, star_rating, height)
+        draw_star_rating(
+            frame,
+            star_rating,
+            height,
+            layout_point(layout_positions, "star_rating", width, height),
+        )
 
     write_render_frame(output_dir, frame_id, frame)
 
@@ -2334,11 +2444,16 @@ def render_video(
     results_duration=4.5,
     show_results_screen=True,
     colour_combo_during_holds=True,
+    layout_positions=None,
+    cancel_callback=None,
 ):
+    ensure_not_cancelled(cancel_callback)
+
     if progress_callback:
         progress_callback(0, "Preparing render: reading beatmap and replay...")
 
     beatmap = parse_osu(osu_file)
+    ensure_not_cancelled(cancel_callback)
 
     width, height = map(int, resolution.split("x"))
     fps = 60
@@ -2371,6 +2486,7 @@ def render_video(
     replay = get_replay(replay_file) if replay_file else None
     replay_accuracy = get_stable_mania_accuracy(replay_file) if replay_file else 100.0
     target_counts = replay_judgement_counts(replay) if replay else None
+    ensure_not_cancelled(cancel_callback)
 
     if events:
         judgements, bad_judgements = build_judgements(notes, events, beatmap.keys, mirror, overall_difficulty, is_convert)
@@ -2404,6 +2520,7 @@ def render_video(
         if j.get("counts_accuracy", True) and j["value"] < 300
     ][:100]
     simulated_accuracy = judgements[-1]["accuracy"] if judgements else 100.0
+    ensure_not_cancelled(cancel_callback)
 
     start_map_time = max(0, notes[0]["time"] - 2000)
     gameplay_end_time = max((note["end_time"] if note["end_time"] is not None else note["time"]) for note in notes)
@@ -2441,7 +2558,17 @@ def render_video(
     segments_dir = temp_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
 
+    def ensure_active():
+        try:
+            ensure_not_cancelled(cancel_callback)
+        except RenderCancelled:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            Path(output_file).unlink(missing_ok=True)
+            Path(output_file).with_suffix(".debug.json").unlink(missing_ok=True)
+            raise
+
     skin = load_mania_skin(skin_folder, beatmap.keys)
+    ensure_active()
     results_frame = np.zeros((height, width, 3), dtype=np.uint8)
     draw_results_screen(
         results_frame,
@@ -2542,6 +2669,7 @@ def render_video(
         "show_side_overlay": bool(show_side_overlay),
         "show_strain_graph": bool(show_strain_graph),
         "colour_combo_during_holds": bool(colour_combo_during_holds),
+        "layout_positions": layout_positions or {},
         "vignette_mask": vignette_mask,
     }
 
@@ -2571,6 +2699,7 @@ def render_video(
             "results_duration": float(results_duration),
             "show_results_screen": bool(show_results_screen),
             "colour_combo_during_holds": bool(colour_combo_during_holds),
+            "layout_positions": layout_positions or {},
         },
     )
 
@@ -2580,12 +2709,14 @@ def render_video(
     if progress_callback:
         progress_callback(0, f"Frame: 0/{total_frames} | ETA: calculating...")
 
-    with ProcessPoolExecutor(
+    executor = ProcessPoolExecutor(
         max_workers=workers,
         mp_context=mp.get_context("spawn"),
         initializer=init_worker,
         initargs=(ctx,),
-    ) as executor:
+    )
+
+    try:
         next_frame = 0
         futures = set()
         batch_size = max(8, min(30, total_frames // max(1, workers * 8)))
@@ -2597,11 +2728,16 @@ def render_video(
             return executor.submit(frame_batch_worker, range(start, stop)), stop
 
         while next_frame < total_frames and len(futures) < max_pending:
+            ensure_not_cancelled(cancel_callback)
             future, next_frame = submit_batch(next_frame)
             futures.add(future)
 
         while futures:
-            completed, futures = wait(futures, return_when=FIRST_COMPLETED)
+            ensure_not_cancelled(cancel_callback)
+            completed, futures = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
+
+            if not completed:
+                continue
 
             for future in completed:
                 segment_start, segment_stop, segment_path = future.result()
@@ -2609,6 +2745,7 @@ def render_video(
                 segments.append((segment_start, segment_path))
 
                 if next_frame < total_frames:
+                    ensure_not_cancelled(cancel_callback)
                     new_future, next_frame = submit_batch(next_frame)
                     futures.add(new_future)
 
@@ -2621,8 +2758,22 @@ def render_video(
                         int(done / total_frames * 85),
                         f"Frame: {done}/{total_frames} | Render: {render_fps:.1f} fps | ETA: {remaining}s"
                     )
+    except RenderCancelled:
+        terminate_process_pool(executor, futures)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        Path(output_file).unlink(missing_ok=True)
+        Path(output_file).with_suffix(".debug.json").unlink(missing_ok=True)
+        raise
+    except Exception:
+        terminate_process_pool(executor, futures)
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        Path(output_file).unlink(missing_ok=True)
+        raise
+    else:
+        executor.shutdown(wait=True)
 
     frame_stream = temp_dir / "frames.mjpg"
+    ensure_active()
 
     if progress_callback:
         progress_callback(85, "Joining frame stream...")
@@ -2633,9 +2784,11 @@ def render_video(
                 shutil.copyfileobj(segment_stream, output_stream, length=4 * 1024 * 1024)
 
     shutil.rmtree(segments_dir)
+    ensure_active()
     silent_video = temp_dir / "silent.mp4"
 
     encoder_cmd, encoder_attempts = encode_silent_video(fps, frame_stream, silent_video, progress_callback)
+    ensure_active()
     debug_path = Path(output_file).with_suffix(".debug.json")
 
     if debug_path.exists():
@@ -2677,6 +2830,7 @@ def render_video(
         cmd = [ffmpeg_binary(), "-y", "-i", str(silent_video), "-c:v", "copy", output_file]
 
     subprocess.run(cmd, check=True)
+    ensure_active()
     shutil.rmtree(temp_dir)
 
     if progress_callback:

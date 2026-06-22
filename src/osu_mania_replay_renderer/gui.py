@@ -1,6 +1,11 @@
 from pathlib import Path
+import os
+import platform
+import shutil
+import subprocess
+import threading
 
-from PySide6.QtCore import QThread, Signal, Qt, QUrl
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QThread, Signal, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -8,6 +13,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
+    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -18,6 +24,7 @@ from PySide6.QtWidgets import (
     QSizePolicy,
     QSpinBox,
     QStyle,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -29,7 +36,8 @@ from osu_mania_replay_renderer.osu_finder import (
     is_osu_folder,
     list_skins,
 )
-from osu_mania_replay_renderer.renderer import render_video
+from osu_mania_replay_renderer.layout_editor import LayoutEditor
+from osu_mania_replay_renderer.renderer import RenderCancelled, render_video
 from osu_mania_replay_renderer.settings import load_settings, update_setting
 from osu_mania_replay_renderer.updater import RELEASES_URL, check_for_update
 from osu_mania_replay_renderer.version import __version__
@@ -46,6 +54,7 @@ class RenderThread(QThread):
     progress = Signal(int, str)
     finished_ok = Signal(str)
     failed = Signal(str)
+    cancelled = Signal()
 
     def __init__(self, osu_file, skin_folder, output_file, replay_file, options):
         super().__init__()
@@ -54,6 +63,10 @@ class RenderThread(QThread):
         self.output_file = output_file
         self.replay_file = replay_file
         self.options = options
+        self.cancel_event = threading.Event()
+
+    def cancel(self):
+        self.cancel_event.set()
 
     def run(self):
         try:
@@ -63,9 +76,12 @@ class RenderThread(QThread):
                 output_file=self.output_file,
                 replay_file=self.replay_file,
                 progress_callback=self.progress.emit,
+                cancel_callback=self.cancel_event.is_set,
                 **self.options,
             )
             self.finished_ok.emit(self.output_file)
+        except RenderCancelled:
+            self.cancelled.emit()
         except Exception as error:
             self.failed.emit(str(error))
 
@@ -165,6 +181,7 @@ class MainWindow(QMainWindow):
         self.osu_folder = self.settings["osu_folder"] or None
         self.replay_file = self.settings["last_replay"] or None
         self.beatmap_file = self.settings["last_beatmap"] or None
+        self.layout_positions = dict(self.settings.get("layout_positions") or {})
         self.skin_folder = None
         self.thread = None
         self.update_thread = None
@@ -195,14 +212,46 @@ class MainWindow(QMainWindow):
         root_layout.addWidget(title)
         root_layout.addWidget(subtitle)
 
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+
+        render_tab = QWidget()
+        render_layout = QVBoxLayout(render_tab)
+        render_layout.setContentsMargins(0, 8, 0, 0)
+        render_layout.setSpacing(16)
         content = QHBoxLayout()
         content.setSpacing(16)
         content.addWidget(self._build_source_group(), 3)
         content.addWidget(self._build_options_group(), 2)
-        root_layout.addLayout(content, 1)
-        root_layout.addWidget(self._build_render_group())
+        render_layout.addLayout(content, 1)
+        render_layout.addWidget(self._build_render_group())
+
+        self.layout_editor = LayoutEditor(self.layout_positions)
+        self.layout_editor.positions_changed.connect(self._layout_positions_changed)
+        self.tabs.addTab(render_tab, "Render")
+        self.tabs.addTab(self.layout_editor, "Layout")
+        self.tabs.currentChanged.connect(self._animate_current_tab)
+        root_layout.addWidget(self.tabs, 1)
 
         self.setCentralWidget(root)
+
+    def _layout_positions_changed(self, positions):
+        self.layout_positions = dict(positions)
+        self.settings["layout_positions"] = dict(positions)
+        update_setting("layout_positions", positions)
+
+    def _animate_current_tab(self, index):
+        page = self.tabs.widget(index)
+        effect = QGraphicsOpacityEffect(page)
+        page.setGraphicsEffect(effect)
+        animation = QPropertyAnimation(effect, b"opacity", page)
+        animation.setDuration(170)
+        animation.setStartValue(0.62)
+        animation.setEndValue(1.0)
+        animation.setEasingCurve(QEasingCurve.OutCubic)
+        animation.finished.connect(lambda: page.setGraphicsEffect(None))
+        page._fade_animation = animation
+        animation.start()
 
     def _path_row(self, label, button_text, icon, callback):
         row = QVBoxLayout()
@@ -347,6 +396,9 @@ class MainWindow(QMainWindow):
         self.progress = QProgressBar()
         self.progress.setRange(0, 100)
         self.progress.setValue(0)
+        self.progress_animation = QPropertyAnimation(self.progress, b"value", self)
+        self.progress_animation.setDuration(180)
+        self.progress_animation.setEasingCurve(QEasingCurve.OutCubic)
         self.progress_label = QLabel("Ready")
         self.progress_label.setObjectName("progressLabel")
 
@@ -355,12 +407,22 @@ class MainWindow(QMainWindow):
         self.render_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.render_button.clicked.connect(self.start_render)
 
+        self.stop_button = QPushButton("Stop render")
+        self.stop_button.setObjectName("stopButton")
+        self.stop_button.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
+        self.stop_button.setEnabled(False)
+        self.stop_button.clicked.connect(self.cancel_render)
+
         self.update_button = QPushButton("Check for updates")
         self.update_button.clicked.connect(self.check_updates)
 
         layout.addWidget(self.progress)
         layout.addWidget(self.progress_label)
-        layout.addWidget(self.render_button)
+        commands = QHBoxLayout()
+        commands.setSpacing(10)
+        commands.addWidget(self.render_button, 3)
+        commands.addWidget(self.stop_button, 2)
+        layout.addLayout(commands)
         layout.addWidget(self.update_button)
         return group
 
@@ -378,6 +440,7 @@ class MainWindow(QMainWindow):
             QLabel#pathLabel { color: #b8bcc0; padding: 2px 0; }
             QLabel#fieldLabel, QLabel#progressLabel { color: #b8bcc0; }
             QLabel#lookupStatus { color: #aeb4ba; font-size: 12px; }
+            QLabel#layoutStatus { color: #aeb4ba; font-weight: 600; }
             QLabel#infoLabel {
                 color: #80d8e8;
                 background: #202326;
@@ -418,6 +481,15 @@ class MainWindow(QMainWindow):
                 min-height: 40px;
             }
             QPushButton#primaryButton:hover { background: #35aa73; }
+            QPushButton#stopButton {
+                background: #3a2528;
+                border-color: #704047;
+                color: #f4dfe2;
+                font-weight: 700;
+                min-height: 40px;
+            }
+            QPushButton#stopButton:hover { background: #4a2c31; border-color: #a35560; }
+            QPushButton#stopButton:disabled { background: #242628; border-color: #34373a; color: #6f7478; }
             QComboBox::drop-down { border: 0; width: 28px; }
             QCheckBox { spacing: 8px; min-height: 22px; }
             QCheckBox::indicator {
@@ -436,6 +508,28 @@ class MainWindow(QMainWindow):
                 text-align: center;
             }
             QProgressBar::chunk { border-radius: 5px; background: #59bdcc; }
+            QTabWidget::pane {
+                border: 0;
+                background: transparent;
+                top: -1px;
+            }
+            QTabBar { qproperty-drawBase: 0; }
+            QTabBar::tab {
+                min-width: 112px;
+                min-height: 34px;
+                padding: 0 14px;
+                color: #9fa5aa;
+                background: transparent;
+                border-bottom: 2px solid transparent;
+                font-weight: 600;
+            }
+            QTabBar::tab:hover { color: #e8ecef; background: #202326; }
+            QTabBar::tab:selected { color: #ffffff; border-bottom-color: #59bdcc; }
+            QGraphicsView#layoutPreview {
+                border: 1px solid #34383c;
+                border-radius: 7px;
+                background: #050607;
+            }
         """)
 
     def load_saved_skins(self):
@@ -487,7 +581,73 @@ class MainWindow(QMainWindow):
         directory = Path(path).expanduser()
         return str(directory if directory.exists() else Path.home())
 
+    @staticmethod
+    def _host_process_environment():
+        environment = os.environ.copy()
+
+        if "LD_LIBRARY_PATH_ORIG" in environment:
+            environment["LD_LIBRARY_PATH"] = environment["LD_LIBRARY_PATH_ORIG"]
+        else:
+            environment.pop("LD_LIBRARY_PATH", None)
+
+        return environment
+
+    @staticmethod
+    def _filter_parts(file_filter):
+        name, separator, pattern = file_filter.partition("(")
+        return name.strip(), pattern.rstrip(")").strip() if separator else "*"
+
+    def _linux_system_picker(self, mode, title, start_path, file_filter=""):
+        if platform.system().lower() != "linux":
+            return None
+
+        start_path = str(Path(start_path).expanduser())
+        environment = self._host_process_environment()
+        name, pattern = self._filter_parts(file_filter)
+        zenity = shutil.which("zenity")
+
+        if zenity:
+            command = [zenity, "--file-selection", f"--title={title}"]
+
+            if mode == "directory":
+                command.append("--directory")
+                command.append(f"--filename={start_path.rstrip('/')}/")
+            elif mode == "save":
+                command.extend(("--save", "--confirm-overwrite", f"--filename={start_path}"))
+            else:
+                command.append(f"--filename={start_path.rstrip('/')}/")
+
+            if file_filter:
+                command.append(f"--file-filter={name} | {pattern}")
+
+            result = subprocess.run(command, capture_output=True, text=True, env=environment, check=False)
+
+            if result.returncode in (0, 1):
+                return result.stdout.strip() if result.returncode == 0 else ""
+
+        kdialog = shutil.which("kdialog")
+
+        if kdialog:
+            if mode == "directory":
+                command = [kdialog, "--getexistingdirectory", start_path, "--title", title]
+            elif mode == "save":
+                command = [kdialog, "--getsavefilename", start_path, f"{pattern}|{name}", "--title", title]
+            else:
+                command = [kdialog, "--getopenfilename", start_path, f"{pattern}|{name}", "--title", title]
+
+            result = subprocess.run(command, capture_output=True, text=True, env=environment, check=False)
+
+            if result.returncode in (0, 1):
+                return result.stdout.strip() if result.returncode == 0 else ""
+
+        return None
+
     def _get_existing_directory(self, title, start_dir):
+        system_result = self._linux_system_picker("directory", title, start_dir)
+
+        if system_result is not None:
+            return system_result
+
         dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir))
         dialog.setFileMode(QFileDialog.Directory)
         dialog.setOption(QFileDialog.ShowDirsOnly, True)
@@ -500,6 +660,11 @@ class MainWindow(QMainWindow):
         return selected[0] if selected else ""
 
     def _get_open_file_name(self, title, start_dir, file_filter):
+        system_result = self._linux_system_picker("open", title, start_dir, file_filter)
+
+        if system_result is not None:
+            return system_result
+
         dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir), file_filter)
         dialog.setFileMode(QFileDialog.ExistingFile)
         dialog.setOption(QFileDialog.DontUseNativeDialog, False)
@@ -511,6 +676,11 @@ class MainWindow(QMainWindow):
         return selected[0] if selected else ""
 
     def _get_save_file_name(self, title, start_path, file_filter):
+        system_result = self._linux_system_picker("save", title, start_path, file_filter)
+
+        if system_result is not None:
+            return system_result
+
         dialog = QFileDialog(self, title, self._native_dialog_directory(Path(start_path).parent), file_filter)
         dialog.selectFile(str(start_path))
         dialog.setAcceptMode(QFileDialog.AcceptSave)
@@ -666,7 +836,10 @@ class MainWindow(QMainWindow):
         self.lookup_status.hide()
 
     def closeEvent(self, event):
-        background_threads = (self.beatmap_thread, self.discovery_thread, self.update_thread)
+        if self.thread and self.thread.isRunning():
+            self.thread.cancel()
+
+        background_threads = (self.beatmap_thread, self.discovery_thread, self.update_thread, self.thread)
 
         for thread in background_threads:
             if thread and thread.isRunning():
@@ -692,6 +865,7 @@ class MainWindow(QMainWindow):
             "results_duration": self.results_duration_spin.value(),
             "show_results_screen": self.results_screen_check.isChecked(),
             "colour_combo_during_holds": self.hold_combo_colour_check.isChecked(),
+            "layout_positions": self.layout_editor.positions(),
         }
 
     def _save_render_settings(self, options):
@@ -705,6 +879,7 @@ class MainWindow(QMainWindow):
         update_setting("results_duration", str(options["results_duration"]))
         update_setting("show_results_screen", options["show_results_screen"])
         update_setting("colour_combo_during_holds", options["colour_combo_during_holds"])
+        update_setting("layout_positions", options["layout_positions"])
 
     def start_render(self):
         if not self.beatmap_file or not self.replay_file:
@@ -740,6 +915,7 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress_label.setText("Preparing render...")
         self.render_button.setEnabled(False)
+        self.stop_button.setEnabled(True)
 
         self.thread = RenderThread(
             self.beatmap_file,
@@ -751,22 +927,46 @@ class MainWindow(QMainWindow):
         self.thread.progress.connect(self.update_progress)
         self.thread.finished_ok.connect(self.render_done)
         self.thread.failed.connect(self.render_failed)
+        self.thread.cancelled.connect(self.render_cancelled)
         self.thread.start()
 
     def update_progress(self, percent, text):
-        self.progress.setValue(percent)
+        self.progress_animation.stop()
+        self.progress_animation.setStartValue(self.progress.value())
+        self.progress_animation.setEndValue(percent)
+        self.progress_animation.start()
         self.progress_label.setText(text)
+
+        if percent >= 85:
+            self.stop_button.setEnabled(False)
+
+    def cancel_render(self):
+        if not self.thread or not self.thread.isRunning():
+            return
+
+        self.thread.cancel()
+        self.stop_button.setEnabled(False)
+        self.progress_label.setText("Stopping render...")
 
     def render_done(self, output_file):
         self.render_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.progress.setValue(100)
         self.progress_label.setText("Render complete")
         QMessageBox.information(self, "Render complete", f"Video created:\n{output_file}")
 
     def render_failed(self, error):
         self.render_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
         self.progress_label.setText("Render failed")
         QMessageBox.critical(self, "Render error", error)
+
+    def render_cancelled(self):
+        self.render_button.setEnabled(True)
+        self.stop_button.setEnabled(False)
+        self.progress_animation.stop()
+        self.progress.setValue(0)
+        self.progress_label.setText("Render cancelled")
 
     def check_updates(self):
         if self.update_thread and self.update_thread.isRunning():

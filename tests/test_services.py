@@ -7,8 +7,17 @@ import unittest
 from unittest.mock import patch
 from urllib.error import HTTPError
 
+import numpy as np
+
 from osu_mania_replay_renderer import updater
 from osu_mania_replay_renderer.osu_finder import find_beatmap_by_hash, find_osu_folder
+from osu_mania_replay_renderer.renderer import (
+    RenderCancelled,
+    draw_difficulty_graph,
+    draw_key_input_overlay,
+    ensure_not_cancelled,
+    layout_point,
+)
 
 
 class JsonResponse(io.BytesIO):
@@ -117,6 +126,44 @@ class UpdaterTests(unittest.TestCase):
             with self.assertRaisesRegex(updater.UpdateCheckError, "no compatible asset"):
                 updater.check_for_update()
 
+
+class RendererControlTests(unittest.TestCase):
+    def test_layout_positions_are_normalised_and_clamped(self):
+        self.assertEqual(layout_point({"combo": [0.25, 0.75]}, "combo", 1280, 720), (320, 540))
+        self.assertEqual(layout_point({"combo": [-1, 2]}, "combo", 1280, 720), (0, 720))
+        self.assertIsNone(layout_point({}, "combo", 1280, 720))
+
+    def test_cancel_callback_raises_render_cancelled(self):
+        with self.assertRaises(RenderCancelled):
+            ensure_not_cancelled(lambda: True)
+
+    def test_overlay_backgrounds_are_black(self):
+        frame = np.full((720, 1280, 3), 90, dtype=np.uint8)
+        draw_key_input_overlay(
+            frame,
+            [([], []) for _ in range(4)],
+            [False] * 4,
+            0,
+            1280,
+            180,
+            (1100, 350),
+        )
+        self.assertTrue(np.any(np.all(frame == 0, axis=2)))
+
+        strain = np.full((720, 1280, 3), 90, dtype=np.uint8)
+        draw_difficulty_graph(
+            strain,
+            [0.2, 0.7, 0.4, 1.0] * 40,
+            500,
+            0,
+            1000,
+            1280,
+            720,
+            420,
+            440,
+            (900, 650),
+        )
+        self.assertTrue(np.any(np.all(strain == 0, axis=2)))
 
 if __name__ == "__main__":
     unittest.main()
