@@ -123,6 +123,11 @@ def overlay_scale(height):
     return max(0.58, min(1.8, height / 900))
 
 
+def side_stats_dimensions(height):
+    ui_scale = overlay_scale(height)
+    return max(96, int(186 * ui_scale)), max(140, int(259 * ui_scale))
+
+
 def layout_point(layout_positions, key, width, height):
     value = (layout_positions or {}).get(key)
 
@@ -200,6 +205,40 @@ def paste_rgba(frame, img, x, y, w=None, h=None):
     dst = frame[y1:y2, x1:x2].astype(np.float32)
     src = part[:, :, :3].astype(np.float32)
     frame[y1:y2, x1:x2] = (alpha * src + (1 - alpha) * dst).astype(np.uint8)
+
+
+def paste_additive(frame, img, x, y, w=None, h=None):
+    if img is None:
+        return
+
+    target_width = w if w is not None else img.shape[1]
+    target_height = h if h is not None else img.shape[0]
+
+    if GPU_COMPOSITOR is not None:
+        GPU_COMPOSITOR.queue(img, x, y, target_width, target_height, "additive")
+        return
+
+    if w is not None and h is not None:
+        img = resize_texture(img, target_width, target_height)
+
+    if img.ndim == 2:
+        img = cv2.cvtColor(img, cv2.COLOR_GRAY2BGRA)
+    elif img.shape[2] == 3:
+        alpha_full = np.full((*img.shape[:2], 1), 255, dtype=np.uint8)
+        img = np.concatenate([img, alpha_full], axis=2)
+
+    if x >= frame.shape[1] or y >= frame.shape[0] or x + img.shape[1] <= 0 or y + img.shape[0] <= 0:
+        return
+
+    x1 = max(x, 0)
+    y1 = max(y, 0)
+    x2 = min(x + img.shape[1], frame.shape[1])
+    y2 = min(y + img.shape[0], frame.shape[0])
+    part = img[y1 - y:y2 - y, x1 - x:x2 - x]
+    alpha = part[:, :, 3:4].astype(np.float32) / 255.0
+    glow = part[:, :, :3].astype(np.float32) * alpha
+    destination = frame[y1:y2, x1:x2].astype(np.float32)
+    frame[y1:y2, x1:x2] = np.clip(destination + glow, 0, 255).astype(np.uint8)
 
 
 def paste_rgba_centered(frame, img, cx, cy, scale=1.0, max_width=None):
@@ -1018,6 +1057,77 @@ def draw_stage_lights(frame, skin, pressed, lane_xs, column_widths, height, cfg,
         light_h = min(height, int(stage_light.shape[0] * skin_scale))
         top = max(0, light_y - light_h)
         paste_rgba(frame, stage_light, int(center_x - light_w / 2), top, light_w, light_h)
+
+
+def draw_hit_lighting(
+    frame,
+    skin,
+    display_judgements,
+    judgement_times,
+    map_time,
+    lane_xs,
+    column_widths,
+    judge_y,
+    skin_scale,
+    active_hold_lanes,
+):
+    normal = skin.get("hit_lighting_normal")
+    long = skin.get("hit_lighting_long")
+
+    if not has_visible_alpha(normal) and not has_visible_alpha(long):
+        return
+
+    lane_effects = {lane: "long" for lane in active_hold_lanes}
+    latest_i = bisect_right(judgement_times, map_time) - 1
+    visible_since = map_time - 120
+
+    for index in range(latest_i, -1, -1):
+        judgement = display_judgements[index]
+        display_time = judgement.get("display_time", judgement["time"])
+
+        if display_time < visible_since:
+            break
+
+        if judgement.get("stable_tick") or judgement.get("value", 0) <= 0:
+            continue
+
+        lane = judgement.get("lane")
+
+        if lane is None or lane < 0 or lane >= len(lane_xs):
+            continue
+
+        kind = judgement.get("kind")
+        lane_effects[lane] = "long" if kind == "ln_head" else "normal"
+
+    cfg = skin.get("cfg", {})
+    normal_widths = cfg.get("lighting_n_widths")
+    long_widths = cfg.get("lighting_l_widths")
+
+    for lane, effect in lane_effects.items():
+        image = long if effect == "long" and has_visible_alpha(long) else normal
+
+        if not has_visible_alpha(image):
+            continue
+
+        density_key = "hit_lighting_long_density" if effect == "long" else "hit_lighting_normal_density"
+        density = max(1.0, float(skin.get(density_key, 1.0)))
+        configured_widths = long_widths if effect == "long" else normal_widths
+
+        if configured_widths and lane < len(configured_widths):
+            target_width = max(1, int(configured_widths[lane] * skin_scale))
+        else:
+            target_width = max(1, int(image.shape[1] * skin_scale / density))
+
+        target_height = max(1, int(image.shape[0] * target_width / max(1, image.shape[1])))
+        center_x = lane_xs[lane] + column_widths[lane] // 2
+        paste_additive(
+            frame,
+            image,
+            int(center_x - target_width / 2),
+            int(judge_y - target_height / 2),
+            target_width,
+            target_height,
+        )
 
 
 def draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale):
@@ -1939,6 +2049,7 @@ def frame_worker(frame_id):
 
     start_i = max(0, bisect_left(note_times, visible_start) - 128) if note_times else 0
     active_ln_hold = False
+    active_hold_lanes = []
 
     for lane, lane_holds in enumerate(ln_hold_lanes):
         if lane >= len(pressed) or not pressed[lane] or not lane_holds[0]:
@@ -1949,7 +2060,7 @@ def frame_worker(frame_id):
 
         if hold_i >= 0 and map_time < hold_ends[hold_i]:
             active_ln_hold = True
-            break
+            active_hold_lanes.append(lane)
 
     for note in notes[start_i:]:
         note_time = note["time"]
@@ -2048,10 +2159,6 @@ def frame_worker(frame_id):
                     -1,
                 )
 
-    if motion_blur > 0:
-        flush_gpu(frame)
-        apply_motion_blur(frame, play_x - 16, top_y, play_width + 32, height, motion_blur)
-
     draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale)
     flush_gpu(frame)
     if show_strain_graph:
@@ -2082,6 +2189,19 @@ def frame_worker(frame_id):
 
     if not cfg["keys_under_notes"]:
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
+
+    draw_hit_lighting(
+        frame,
+        skin,
+        display_judgements,
+        judgement_times,
+        map_time,
+        lane_xs,
+        column_widths,
+        judge_y,
+        skin_scale,
+        active_hold_lanes,
+    )
 
     if vignette_mask is not None:
         flush_gpu(frame)
@@ -2141,8 +2261,14 @@ def frame_worker(frame_id):
 
     if show_side_overlay:
         custom_stats = layout_point(layout_positions, "side_stats", width, height)
-        right_x = custom_stats[0] if custom_stats is not None else width - int(24 * ui_scale)
-        stats_y = custom_stats[1] if custom_stats is not None else int(72 * ui_scale)
+
+        if custom_stats is not None:
+            stats_width, stats_height = side_stats_dimensions(height)
+            right_x = min(width - 4, max(stats_width, custom_stats[0] + stats_width // 2))
+            stats_y = max(4, custom_stats[1] - stats_height // 2)
+        else:
+            right_x = width - int(24 * ui_scale)
+            stats_y = int(72 * ui_scale)
         draw_ui_text(frame, f"{combo}x", (right_x, stats_y), 0.88 * ui_scale, (242, 242, 245), 1, "right")
         stats_y += int(32 * ui_scale)
         draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
@@ -2191,6 +2317,10 @@ def frame_worker(frame_id):
             height,
             layout_point(layout_positions, "star_rating", width, height),
         )
+
+    if motion_blur > 0:
+        flush_gpu(frame)
+        apply_motion_blur(frame, 0, 0, width, height, motion_blur)
 
     write_render_frame(output_dir, frame_id, frame)
 

@@ -52,8 +52,15 @@ class GpuCompositor:
     def renderer_name(self):
         return self.context.info.get("GL_RENDERER", "OpenGL")
 
-    def queue(self, image, x, y, width, height):
-        self.commands.append((image, int(x), int(y), max(1, int(width)), max(1, int(height))))
+    def queue(self, image, x, y, width, height, blend_mode="normal"):
+        self.commands.append((
+            image,
+            int(x),
+            int(y),
+            max(1, int(width)),
+            max(1, int(height)),
+            blend_mode,
+        ))
 
     def _ensure_frame(self, width, height):
         if self.frame_size == (width, height):
@@ -138,7 +145,17 @@ class GpuCompositor:
         self.context.enable(self.moderngl.BLEND)
         self.context.blend_func = self.moderngl.SRC_ALPHA, self.moderngl.ONE_MINUS_SRC_ALPHA
 
-        for image, x, y, target_width, target_height in self.commands:
+        current_blend_mode = "normal"
+
+        for image, x, y, target_width, target_height, blend_mode in self.commands:
+            if blend_mode != current_blend_mode:
+                if blend_mode == "additive":
+                    self.context.blend_func = self.moderngl.SRC_ALPHA, self.moderngl.ONE
+                else:
+                    self.context.blend_func = self.moderngl.SRC_ALPHA, self.moderngl.ONE_MINUS_SRC_ALPHA
+
+                current_blend_mode = blend_mode
+
             texture, temporary = self._texture_for(image)
 
             try:

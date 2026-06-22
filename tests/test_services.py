@@ -13,12 +13,15 @@ from osu_mania_replay_renderer import updater
 from osu_mania_replay_renderer.osu_finder import find_beatmap_by_hash, find_osu_folder
 from osu_mania_replay_renderer.renderer import (
     RenderCancelled,
+    apply_motion_blur,
     draw_difficulty_graph,
+    draw_hit_lighting,
     draw_key_input_overlay,
     draw_skin_text,
     ensure_not_cancelled,
     layout_point,
 )
+from osu_mania_replay_renderer.layout_editor import layout_definitions
 
 
 class JsonResponse(io.BytesIO):
@@ -201,8 +204,61 @@ class RendererControlTests(unittest.TestCase):
             compositor.flush(frame)
             self.assertTrue(np.all(frame[0, :, 0] == 16))
             self.assertIn(int(frame[3, 3, 2]), range(99, 102))
+
+            additive = np.full((8, 10, 3), 80, dtype=np.uint8)
+            compositor.queue(image, 2, 2, 4, 4, "additive")
+            compositor.flush(additive)
+            self.assertGreater(int(additive[3, 3, 2]), 80)
+            self.assertEqual(int(additive[3, 3, 0]), 80)
         finally:
             compositor.release()
+
+    def test_layout_preview_uses_renderer_skin_scale(self):
+        glyph = np.zeros((100, 26, 4), dtype=np.uint8)
+        glyph[:, :, 3] = 255
+        judgement = np.zeros((50, 50, 4), dtype=np.uint8)
+        judgement[:, :, 3] = 255
+        skin = {
+            "cfg": {
+                "column_widths": [70] * 4,
+                "column_spacing": [3] * 3,
+                "combo_overlap": 1,
+            },
+            "keys": [None] * 4,
+            "combo_glyphs": {character: {2.0: glyph} for character in "128"},
+            "hit_images": {"300": judgement},
+            "hit_image_densities": {"300": 1.0},
+        }
+        definitions = layout_definitions(skin)
+        self.assertEqual(definitions["playfield"]["size"], (214, 360))
+        self.assertEqual(definitions["combo"]["size"], (21, 27))
+        self.assertEqual(definitions["judgement"]["size"], (23, 23))
+
+    def test_hit_lighting_uses_additive_blending(self):
+        lighting = np.zeros((10, 10, 4), dtype=np.uint8)
+        lighting[:, :, 1] = 100
+        lighting[:, :, 3] = 128
+        lighting.flags.writeable = False
+        skin = {
+            "cfg": {"lighting_n_widths": None, "lighting_l_widths": None},
+            "hit_lighting_normal": lighting,
+            "hit_lighting_long": lighting,
+            "hit_lighting_normal_density": 1.0,
+            "hit_lighting_long_density": 1.0,
+        }
+        frame = np.full((40, 40, 3), 80, dtype=np.uint8)
+        judgement = {"time": 100, "display_time": 100, "value": 300, "lane": 0, "kind": "tap"}
+        draw_hit_lighting(frame, skin, [judgement], [100], 150, [10], [20], 20, 1.0, [])
+        self.assertGreater(int(frame[20, 20, 1]), 80)
+        self.assertEqual(int(frame[20, 20, 0]), 80)
+
+    def test_motion_blur_covers_the_entire_frame(self):
+        frame = np.zeros((24, 24, 3), dtype=np.uint8)
+        frame[5, 1] = 255
+        frame[18, 22] = 255
+        apply_motion_blur(frame, 0, 0, 24, 24, 3)
+        self.assertTrue(np.any(frame[2:9, 1] > 0))
+        self.assertTrue(np.any(frame[15:22, 22] > 0))
 
 if __name__ == "__main__":
     unittest.main()

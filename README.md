@@ -15,7 +15,8 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Shows a compact results header with the map title, mapper, player, and active mods.
 - Draws a compact strain profile with completed sections in green and upcoming sections in grey.
 - Supports DT, NC, and HT timing. NC also applies raised audio pitch.
-- Includes optional vertical motion blur.
+- Includes optional full-frame vertical motion blur for gameplay and overlays.
+- Draws `lightingN` and `lightingL` hit lighting from the selected mania skin with additive blending.
 - Includes selectable side statistics, strain graph, vignette strength, results background opacity, results duration, and results-screen visibility.
 - Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
 - Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
@@ -24,7 +25,7 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Detects common stable osu! installations automatically on Windows, Linux, osu-wine, Wine, and Lutris.
 - Reads replay metadata and searches beatmaps in background threads with progress, cancellation, and ETA.
 - Supports cancelling frame generation mid-render and removes partial frame streams and output files.
-- Provides a persistent drag-and-drop layout editor for the playfield, skin combo, judgements, statistics, key input, timeline, strain graph, and star rating.
+- Provides a persistent drag-and-drop layout editor with renderer-scale skin PNGs and representative gameplay overlay frames.
 - Prefers the desktop file picker: GTK/Zenity or the XDG portal on Linux, KDE's KDialog, and Explorer on Windows.
 - Uses batched OpenGL/EGL skin compositing when a GPU context is available, with automatic CPU fallback and VA-API, QSV, or AMF video encoding.
 

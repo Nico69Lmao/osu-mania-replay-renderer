@@ -122,6 +122,8 @@ def parse_skin_ini(skin_folder: Path, keys: int):
         "score_position": None,
         "combo_position": None,
         "light_position": None,
+        "lighting_n_widths": None,
+        "lighting_l_widths": None,
         "keys_under_notes": False,
         "upside_down": False,
         "judgement_line": True,
@@ -227,6 +229,8 @@ def parse_skin_ini(skin_folder: Path, keys: int):
     cfg["score_position"] = get_int("ScorePosition")
     cfg["combo_position"] = get_int("ComboPosition")
     cfg["light_position"] = get_int("LightPosition")
+    cfg["lighting_n_widths"] = parse_csv_ints(block.get("LightingNWidth", ""), keys) or None
+    cfg["lighting_l_widths"] = parse_csv_ints(block.get("LightingLWidth", ""), keys) or None
     cfg["keys_under_notes"] = block.get("KeysUnderNotes", "0") == "1"
     cfg["upside_down"] = block.get("UpsideDown", "0") == "1"
     cfg["judgement_line"] = block.get("JudgementLine", "1") != "0"
@@ -308,6 +312,8 @@ def load_mania_skin(skin_folder: str | None, keys: int):
             "column_widths": None,
             "column_spacing": [0] * (keys - 1),
             "column_line_widths": [1] * (keys + 1),
+            "lighting_n_widths": None,
+            "lighting_l_widths": None,
             "keys_under_notes": False,
             "upside_down": False,
             "judgement_line": True,
@@ -327,6 +333,10 @@ def load_mania_skin(skin_folder: str | None, keys: int):
         "stage_bottom": None,
         "stage_light": None,
         "stage_hint": None,
+        "hit_lighting_normal": None,
+        "hit_lighting_long": None,
+        "hit_lighting_normal_density": 1.0,
+        "hit_lighting_long_density": 1.0,
         "ranking_panel": None,
         "ranking_panel_density": 1.0,
         "ranking_ranks": {},
@@ -389,6 +399,12 @@ def load_mania_skin(skin_folder: str | None, keys: int):
     skin["stage_bottom"] = read_image(find_image(folder, images.get("StageBottom")) or find_image(folder, "mania-stage-bottom"))
     skin["stage_light"] = read_image(find_image(folder, images.get("StageLight")) or find_image(folder, "mania-stage-light"))
     skin["stage_hint"] = read_image(find_image(folder, images.get("StageHint")) or find_image(folder, "mania-stage-hint"))
+    lighting_n_path = find_image(folder, "lightingN")
+    lighting_l_path = find_image(folder, "lightingL")
+    skin["hit_lighting_normal"] = read_image(lighting_n_path)
+    skin["hit_lighting_long"] = read_image(lighting_l_path)
+    skin["hit_lighting_normal_density"] = 2.0 if lighting_n_path and "@2x" in lighting_n_path.stem.lower() else 1.0
+    skin["hit_lighting_long_density"] = 2.0 if lighting_l_path and "@2x" in lighting_l_path.stem.lower() else 1.0
     ranking_panel_path = find_image(folder, "ranking-panel")
     skin["ranking_panel"] = read_image(ranking_panel_path)
     skin["ranking_panel_density"] = 2.0 if ranking_panel_path and "@2x" in ranking_panel_path.stem.lower() else 1.0

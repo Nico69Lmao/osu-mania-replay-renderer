@@ -19,16 +19,111 @@ from osu_mania_replay_renderer.skin_loader import load_mania_skin
 SCENE_WIDTH = 640
 SCENE_HEIGHT = 360
 EDGE_WARNING_DISTANCE = 10
-LAYOUT_ELEMENTS = {
-    "playfield": {"position": (0.50, 0.50), "size": (150, 330)},
-    "combo": {"position": (0.50, 0.25), "size": (92, 34)},
-    "judgement": {"position": (0.50, 0.38), "size": (112, 34)},
-    "side_stats": {"position": (0.90, 0.20), "size": (108, 92)},
-    "key_input": {"position": (0.90, 0.56), "size": (108, 108)},
-    "timeline": {"position": (0.90, 0.80), "size": (104, 34)},
-    "strain_graph": {"position": (0.82, 0.93), "size": (210, 48)},
-    "star_rating": {"position": (0.08, 0.82), "size": (94, 34)},
+SKIN_SCALE = SCENE_HEIGHT / 480.0
+LAYOUT_POSITIONS = {
+    "playfield": (0.50, 0.50),
+    "combo": (0.50, 0.25),
+    "judgement": (0.50, 0.38),
+    "side_stats": (0.94, 0.22),
+    "key_input": (0.94, 0.49),
+    "timeline": (0.94, 0.64),
+    "strain_graph": (0.87, 0.95),
+    "star_rating": (0.08, 0.82),
 }
+DEFAULT_SIZES = {
+    "playfield": (150, 360),
+    "combo": (34, 34),
+    "judgement": (30, 30),
+    "side_stats": (74, 104),
+    "key_input": (50, 90),
+    "timeline": (52, 18),
+    "strain_graph": (166, 33),
+    "star_rating": (50, 14),
+}
+
+
+def meaningful_image(image):
+    if image is None:
+        return False
+
+    if image.ndim < 3 or image.shape[2] < 4:
+        return True
+
+    return int((image[:, :, 3] > 8).sum()) >= 16
+
+
+def visible_crop(image):
+    if image is None or image.ndim < 3 or image.shape[2] < 4:
+        return image
+
+    ys, xs = (image[:, :, 3] > 8).nonzero()
+
+    if len(xs) == 0:
+        return image
+
+    return image[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+
+def logical_glyph_metrics(glyphs, text, scale, overlap):
+    metrics = []
+
+    for character in text:
+        variants = glyphs.get(character, {})
+
+        if not variants:
+            return None
+
+        density = max(variants)
+        image = variants[density]
+        metrics.append((
+            image,
+            max(1, int(image.shape[1] * scale / density)),
+            max(1, int(image.shape[0] * scale / density)),
+        ))
+
+    overlap_px = int(overlap * scale)
+    width = sum(item[1] for item in metrics) - overlap_px * max(0, len(metrics) - 1)
+    height = max(item[2] for item in metrics)
+    return metrics, max(1, width), max(1, height), overlap_px
+
+
+def layout_definitions(skin):
+    cfg = skin.get("cfg", {})
+    keys = max(1, len(skin.get("keys", [])))
+    column_widths = cfg.get("column_widths") or [70] * keys
+    column_spacing = cfg.get("column_spacing") or [0] * (keys - 1)
+    scaled_widths = [int(width * SKIN_SCALE) for width in column_widths]
+    scaled_spacing = [int(spacing * SKIN_SCALE) for spacing in column_spacing]
+    playfield_width = max(1, sum(scaled_widths) + sum(scaled_spacing))
+
+    combo_metrics = logical_glyph_metrics(
+        skin.get("combo_glyphs", {}),
+        "128",
+        SKIN_SCALE * 0.72,
+        cfg.get("combo_overlap", 0),
+    )
+    combo_size = (combo_metrics[1], combo_metrics[2]) if combo_metrics else DEFAULT_SIZES["combo"]
+
+    judgement = skin.get("hit_images", {}).get("300")
+    judgement_density = max(1.0, float(skin.get("hit_image_densities", {}).get("300", 1.0)))
+
+    if meaningful_image(judgement):
+        judgement_scale = SCENE_HEIGHT / 768.0 / judgement_density
+        judgement_size = (
+            max(1, int(judgement.shape[1] * judgement_scale)),
+            max(1, int(judgement.shape[0] * judgement_scale)),
+        )
+    else:
+        judgement_size = DEFAULT_SIZES["judgement"]
+
+    sizes = dict(DEFAULT_SIZES)
+    sizes["playfield"] = (playfield_width, SCENE_HEIGHT)
+    sizes["combo"] = combo_size
+    sizes["judgement"] = judgement_size
+    return {
+        key: {"position": LAYOUT_POSITIONS[key], "size": sizes[key]}
+        for key in LAYOUT_POSITIONS
+    }
 
 
 def skin_pixmap(image):
@@ -48,15 +143,6 @@ def skin_pixmap(image):
     return QPixmap.fromImage(qimage)
 
 
-def selected_glyph(glyphs, character):
-    variants = glyphs.get(character, {})
-
-    if not variants:
-        return None
-
-    return variants[max(variants)]
-
-
 def draw_fitted(painter, image, bounds, margin=2):
     pixmap = skin_pixmap(image)
 
@@ -68,6 +154,41 @@ def draw_fitted(painter, image, bounds, margin=2):
     x = target.x() + (target.width() - scaled.width()) / 2
     y = target.y() + (target.height() - scaled.height()) / 2
     painter.drawPixmap(int(x), int(y), scaled)
+    return True
+
+
+def draw_exact(painter, image, x, y, width, height):
+    pixmap = skin_pixmap(image)
+
+    if pixmap is None or pixmap.isNull():
+        return False
+
+    scaled = pixmap.scaled(max(1, int(width)), max(1, int(height)), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
+    painter.drawPixmap(int(x), int(y), scaled)
+    return True
+
+
+def draw_combo_preview(painter, skin, width, height):
+    cfg = skin.get("cfg", {})
+    metrics = logical_glyph_metrics(
+        skin.get("combo_glyphs", {}),
+        "128",
+        SKIN_SCALE * 0.72,
+        cfg.get("combo_overlap", 0),
+    )
+
+    if metrics is None:
+        return False
+
+    glyphs, total_width, max_height, overlap = metrics
+    x = int((width - total_width) / 2)
+    top = int((height - max_height) / 2)
+
+    for image, glyph_width, glyph_height in glyphs:
+        y = top + (max_height - glyph_height) // 2
+        draw_exact(painter, image, x, y, glyph_width, glyph_height)
+        x += glyph_width - overlap
+
     return True
 
 
@@ -86,30 +207,58 @@ def preview_pixmap(key, definition, skin):
     if key == "playfield":
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 225))
         keys = max(1, len(skin.get("keys", [])))
-        lane_width = width / keys
+        cfg = skin.get("cfg", {})
+        source_widths = cfg.get("column_widths") or [70] * keys
+        source_spacing = cfg.get("column_spacing") or [0] * (keys - 1)
+        lane_widths = [int(value * SKIN_SCALE) for value in source_widths]
+        lane_spacing = [int(value * SKIN_SCALE) for value in source_spacing]
+        judge_y = int((cfg.get("hit_position") or 402) * SKIN_SCALE)
+        lane_x = 0
 
         for lane in range(keys):
-            x = int(lane * lane_width)
+            lane_width = lane_widths[lane]
+            x = lane_x
             painter.fillRect(QRectF(x, 0, lane_width, height), QColor(9, 11, 12, 245))
             painter.setPen(QPen(QColor(92, 98, 102), 0.8))
             painter.drawLine(x, 0, x, height)
             note = skin.get("notes", [None] * keys)[lane]
-            receptor = skin.get("keys", [None] * keys)[lane]
-            draw_fitted(painter, note, QRectF(x + 2, 58 + lane * 17, lane_width - 4, lane_width - 4))
-            draw_fitted(painter, receptor, QRectF(x + 1, height - lane_width - 8, lane_width - 2, lane_width - 2))
+            receptor = visible_crop(skin.get("keys", [None] * keys)[lane])
+            note_width = max(1, int(lane_width * 0.94))
+            note_height = max(1, int(note.shape[0] * note_width / note.shape[1])) if note is not None else note_width
+            note_y = 40 + lane * 35
+            draw_exact(painter, note, x + (lane_width - note_width) / 2, note_y, note_width, note_height)
+            receptor_center_y = judge_y - note_width // 2
+            draw_exact(
+                painter,
+                receptor,
+                x + (lane_width - note_width) / 2,
+                receptor_center_y - note_width / 2,
+                note_width,
+                note_width,
+            )
+            lane_x += lane_width
+
+            if lane < len(lane_spacing):
+                lane_x += lane_spacing[lane]
+
+        stage_bottom = skin.get("stage_bottom")
+
+        if meaningful_image(stage_bottom):
+            cover_width = int(stage_bottom.shape[1] * SKIN_SCALE)
+            cover_height = int(stage_bottom.shape[0] * SKIN_SCALE)
+            draw_exact(
+                painter,
+                stage_bottom,
+                (width - cover_width) / 2,
+                height - cover_height,
+                cover_width,
+                cover_height,
+            )
 
         painter.setPen(QPen(QColor(92, 98, 102), 0.8))
         painter.drawLine(width - 1, 0, width - 1, height)
     elif key == "combo":
-        glyphs = skin.get("combo_glyphs", {})
-        glyph_images = [selected_glyph(glyphs, character) for character in "123"]
-        glyph_images = [image for image in glyph_images if image is not None]
-
-        if glyph_images:
-            cell_width = width / len(glyph_images)
-            for index, image in enumerate(glyph_images):
-                draw_fitted(painter, image, QRectF(index * cell_width, 0, cell_width + 2, height), 0)
-        else:
+        if not draw_combo_preview(painter, skin, width, height):
             painter.drawText(pixmap.rect(), Qt.AlignCenter, "123")
     elif key == "judgement":
         image = skin.get("hit_images", {}).get("300g")
@@ -120,42 +269,52 @@ def preview_pixmap(key, definition, skin):
         if not draw_fitted(painter, image, QRectF(pixmap.rect()), 0):
             painter.drawText(pixmap.rect(), Qt.AlignCenter, "300")
     elif key == "side_stats":
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 238))
-        painter.drawText(QRectF(5, 3, width - 10, 24), Qt.AlignRight, "128x")
-        painter.drawText(QRectF(5, 25, width - 10, 20), Qt.AlignRight, "99.82%")
-        painter.setFont(QFont("Sans Serif", 7))
-        painter.drawText(QRectF(5, 49, width - 10, 38), Qt.AlignRight, "MAX  82\n300  46\nMISS   0")
+        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 242))
+        large_font = QFont("Sans Serif", 8)
+        large_font.setWeight(QFont.DemiBold)
+        painter.setFont(large_font)
+        painter.drawText(QRectF(3, 1, width - 6, 17), Qt.AlignRight, "128x")
+        painter.setFont(QFont("Sans Serif", 6))
+        painter.drawText(QRectF(3, 18, width - 6, 14), Qt.AlignRight, "99.82%")
+        painter.setFont(QFont("Sans Serif", 5))
+        painter.drawText(
+            QRectF(3, 34, width - 6, height - 36),
+            Qt.AlignRight,
+            "300g  82\n300   46\n200    3\n100    1\n50     0\nMiss   0",
+        )
     elif key == "key_input":
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 238))
-        lane_width = 16
-        gap = 7
+        lane_width = 7
+        gap = 4
         start_x = int((width - (lane_width * 4 + gap * 3)) / 2)
 
         for lane in range(4):
             x = start_x + lane * (lane_width + gap)
-            for row in range(5):
+            for row in range(8):
                 if (row + lane) % 3 != 1:
-                    painter.fillRect(x, 8 + row * 14, lane_width, 8, QColor(205, 211, 185))
+                    painter.fillRect(x, 5 + row * 8, lane_width, 4, QColor(205, 211, 185))
             painter.setPen(QPen(QColor(211, 171, 63), 1))
-            painter.drawRect(x, height - 22, lane_width, 14)
+            painter.drawRect(x, height - 13, lane_width, 8)
     elif key == "timeline":
-        painter.setPen(QPen(QColor(220, 223, 226), 3))
-        painter.drawEllipse(4, 3, 27, 27)
-        painter.setPen(QPen(QColor(145, 148, 152), 5))
-        painter.drawArc(7, 6, 21, 21, 90 * 16, -210 * 16)
+        painter.setPen(QPen(QColor(220, 223, 226), 1.5))
+        painter.drawEllipse(2, 2, 14, 14)
+        painter.setPen(QPen(QColor(145, 148, 152), 2.5))
+        painter.drawArc(4, 4, 10, 10, 90 * 16, -210 * 16)
         painter.setPen(QPen(QColor("#eef2f4"), 1))
-        painter.drawText(QRectF(37, 0, width - 39, height), Qt.AlignVCenter | Qt.AlignLeft, "1:42")
+        painter.setFont(QFont("Sans Serif", 5))
+        painter.drawText(QRectF(19, 0, width - 20, height), Qt.AlignVCenter | Qt.AlignLeft, "1:42")
     elif key == "strain_graph":
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 238))
         points = QPolygonF([
-            QPointF(3, height - 7), QPointF(width * 0.18, 18), QPointF(width * 0.34, 31),
-            QPointF(width * 0.49, 8), QPointF(width * 0.66, 25), QPointF(width * 0.82, 12),
-            QPointF(width - 3, height - 10),
+            QPointF(2, height - 4), QPointF(width * 0.18, height * 0.35), QPointF(width * 0.34, height * 0.72),
+            QPointF(width * 0.49, height * 0.16), QPointF(width * 0.66, height * 0.58),
+            QPointF(width * 0.82, height * 0.28), QPointF(width - 2, height - 5),
         ])
         painter.setPen(QPen(QColor(75, 224, 104), 2))
         painter.drawPolyline(points)
     else:
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 210))
+        painter.setFont(QFont("Sans Serif", 6))
         painter.drawText(pixmap.rect(), Qt.AlignCenter, "SR 5.82*")
 
     painter.end()
@@ -175,7 +334,10 @@ class MovableLayoutItem(QGraphicsPixmapItem):
         )
         self.setCursor(Qt.OpenHandCursor)
 
-    def set_skin(self, skin):
+    def set_skin(self, skin, definition=None):
+        if definition is not None:
+            self.definition = definition
+
         self.setPixmap(preview_pixmap(self.key, self.definition, skin))
 
     def itemChange(self, change, value):
@@ -230,6 +392,7 @@ class LayoutEditor(QWidget):
         self.custom_positions = dict(positions or {})
         self.items = {}
         self.skin = load_mania_skin(None, 4)
+        self.definitions = layout_definitions(self.skin)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(8, 8, 8, 8)
@@ -255,7 +418,7 @@ class LayoutEditor(QWidget):
         self.view.setMinimumHeight(430)
         layout.addWidget(self.view, 1)
 
-        for key, definition in LAYOUT_ELEMENTS.items():
+        for key, definition in self.definitions.items():
             item = MovableLayoutItem(key, definition, self.skin, self._item_moved)
             self.scene.addItem(item)
             self.items[key] = item
@@ -279,9 +442,12 @@ class LayoutEditor(QWidget):
 
     def set_skin(self, skin_folder, keys=4):
         self.skin = load_mania_skin(skin_folder, max(1, int(keys)))
+        self.definitions = layout_definitions(self.skin)
 
-        for item in self.items.values():
-            item.set_skin(self.skin)
+        for key, item in self.items.items():
+            position = self.custom_positions.get(key, self.definitions[key]["position"])
+            item.set_skin(self.skin, self.definitions[key])
+            self._position_item(item, position)
 
         self.scene.update()
 
@@ -306,7 +472,7 @@ class LayoutEditor(QWidget):
     def reset_positions(self):
         self.custom_positions.clear()
 
-        for key, definition in LAYOUT_ELEMENTS.items():
+        for key, definition in self.definitions.items():
             self._position_item(self.items[key], definition["position"])
 
         self.positions_changed.emit({})
