@@ -1,7 +1,20 @@
 import json
+import os
+import platform
 from pathlib import Path
 
-APP_DIR = Path.home() / ".config" / "mania-renderer"
+
+def config_directory():
+    if platform.system().lower() == "windows" and os.environ.get("APPDATA"):
+        return Path(os.environ["APPDATA"]) / "mania-renderer"
+
+    if os.environ.get("XDG_CONFIG_HOME"):
+        return Path(os.environ["XDG_CONFIG_HOME"]) / "mania-renderer"
+
+    return Path.home() / ".config" / "mania-renderer"
+
+
+APP_DIR = config_directory()
 SETTINGS_FILE = APP_DIR / "settings.json"
 
 DEFAULT_SETTINGS = {

@@ -21,6 +21,8 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
 - Generates frames in parallel into batched MJPEG streams, avoiding thousands of temporary files and reducing disk overhead.
 - Ships as a Windows `.exe` and Linux AppImage, with a built-in release update check.
+- Detects common stable osu! installations automatically on Windows, Linux, osu-wine, Wine, and Lutris.
+- Reads replay metadata and searches beatmaps in background threads with progress, cancellation, and ETA.
 
 ## Project Files
 
@@ -82,7 +84,7 @@ uv run python -m osu_mania_replay_renderer
 
 ## Basic Usage
 
-1. Select the osu! installation folder containing `Songs`, `Skins`, and `osu!.db`.
+1. Confirm the automatically detected osu! installation, or select the folder containing `Songs`, `Skins`, and `osu!.db` manually.
 2. Select an `.osr` replay. The matching beatmap is searched automatically.
 3. Select the skin and rendering options.
 4. Choose an MP4 output path and start the render.
@@ -153,7 +155,7 @@ For later versions, start from a clean working tree and run:
 python scripts/publish_release.py 0.2.1
 ```
 
-This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. Because this repository is private, the in-app update checker needs authenticated GitHub access; set `MANIA_RENDERER_GITHUB_TOKEN` to a token that can read the repository. The button then detects the platform-specific release and opens its download page in the browser.
+This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. Because this repository is private, the in-app update checker uses `MANIA_RENDERER_GITHUB_TOKEN`, `GITHUB_TOKEN`, or an authenticated GitHub CLI session. Without authentication it explains the limitation and offers to open the Releases page in the browser instead of reporting a misleading result.
 
 ## Debug Report
 

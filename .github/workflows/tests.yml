@@ -1,0 +1,23 @@
+name: Tests
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install dependencies
+        run: |
+          python -m pip install uv
+          uv sync --locked
+      - name: Run tests
+        run: uv run python -m unittest discover -s tests -v
+      - name: Compile package
+        run: uv run python -m py_compile src/osu_mania_replay_renderer/*.py

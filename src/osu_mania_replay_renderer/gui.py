@@ -22,10 +22,16 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from osu_mania_replay_renderer.osu_finder import list_skins, find_beatmap_from_replay, get_replay_info
+from osu_mania_replay_renderer.osu_finder import (
+    find_beatmap_by_hash,
+    find_osu_folder,
+    get_replay_info,
+    is_osu_folder,
+    list_skins,
+)
 from osu_mania_replay_renderer.renderer import render_video
 from osu_mania_replay_renderer.settings import load_settings, update_setting
-from osu_mania_replay_renderer.updater import check_for_update
+from osu_mania_replay_renderer.updater import RELEASES_URL, check_for_update
 from osu_mania_replay_renderer.version import __version__
 
 
@@ -75,6 +81,80 @@ class UpdateCheckThread(QThread):
             self.failed.emit(str(error))
 
 
+class OsuFolderDiscoveryThread(QThread):
+    completed = Signal(object)
+
+    def run(self):
+        self.completed.emit(find_osu_folder())
+
+
+class BeatmapLookupThread(QThread):
+    replay_loaded = Signal(object)
+    progress = Signal(int, str)
+    completed = Signal(object)
+    failed = Signal(str)
+
+    def __init__(self, osu_folder, replay_file, preferred_beatmap=None, parent=None):
+        super().__init__(parent)
+        self.osu_folder = osu_folder
+        self.replay_file = replay_file
+        self.preferred_beatmap = preferred_beatmap
+
+    @staticmethod
+    def _eta_text(seconds):
+        if seconds is None:
+            return "calculating ETA..."
+
+        seconds = max(0, int(round(seconds)))
+
+        if seconds >= 60:
+            minutes, seconds = divmod(seconds, 60)
+            return f"ETA {minutes}m {seconds:02d}s"
+
+        return f"ETA {seconds}s"
+
+    def run(self):
+        try:
+            info = get_replay_info(self.replay_file)
+
+            if self.isInterruptionRequested():
+                return
+
+            self.replay_loaded.emit(info)
+
+            if not self.osu_folder:
+                self.completed.emit(None)
+                return
+
+            def report(checked, total, eta):
+                if self.isInterruptionRequested():
+                    return
+
+                if total <= 0:
+                    self.progress.emit(-1, "Indexing installed beatmaps...")
+                    return
+
+                percent = int(checked / max(1, total) * 100)
+                self.progress.emit(
+                    percent,
+                    f"Scanning beatmaps: {checked:,}/{total:,} | {self._eta_text(eta)}",
+                )
+
+            found = find_beatmap_by_hash(
+                self.osu_folder,
+                info["beatmap_hash"],
+                progress_callback=report,
+                cancel_callback=self.isInterruptionRequested,
+                preferred_path=self.preferred_beatmap,
+            )
+
+            if not self.isInterruptionRequested():
+                self.completed.emit(found)
+        except Exception as error:
+            if not self.isInterruptionRequested():
+                self.failed.emit(str(error))
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -88,13 +168,19 @@ class MainWindow(QMainWindow):
         self.skin_folder = None
         self.thread = None
         self.update_thread = None
+        self.discovery_thread = None
+        self.beatmap_thread = None
 
         self._build_ui()
         self._apply_style()
-        self.load_saved_skins()
+        if self.osu_folder and is_osu_folder(self.osu_folder):
+            self._activate_osu_folder(self.osu_folder, persist=False)
+        else:
+            self.osu_folder = None
+            self._start_osu_discovery()
 
         if self.replay_file:
-            self.load_replay_info()
+            self._start_beatmap_lookup()
 
     def _build_ui(self):
         root = QWidget()
@@ -164,6 +250,16 @@ class MainWindow(QMainWindow):
         self.info_label.setObjectName("infoLabel")
         self.info_label.setWordWrap(True)
         layout.addWidget(self.info_label)
+
+        self.lookup_progress = QProgressBar()
+        self.lookup_progress.setRange(0, 100)
+        self.lookup_progress.hide()
+        self.lookup_status = QLabel("")
+        self.lookup_status.setObjectName("lookupStatus")
+        self.lookup_status.setWordWrap(True)
+        self.lookup_status.hide()
+        layout.addWidget(self.lookup_progress)
+        layout.addWidget(self.lookup_status)
         layout.addLayout(beatmap_row)
 
         skin_label = QLabel("Skin")
@@ -281,6 +377,7 @@ class MainWindow(QMainWindow):
             QLabel#pageSubtitle { color: #9fa3a7; margin-bottom: 4px; }
             QLabel#pathLabel { color: #b8bcc0; padding: 2px 0; }
             QLabel#fieldLabel, QLabel#progressLabel { color: #b8bcc0; }
+            QLabel#lookupStatus { color: #aeb4ba; font-size: 12px; }
             QLabel#infoLabel {
                 color: #80d8e8;
                 background: #202326;
@@ -360,6 +457,32 @@ class MainWindow(QMainWindow):
 
         self.skin_combo.blockSignals(False)
 
+    def _start_osu_discovery(self):
+        if self.discovery_thread and self.discovery_thread.isRunning():
+            return
+
+        self.osu_label.setText("Detecting osu! installation...")
+        self.discovery_thread = OsuFolderDiscoveryThread(self)
+        self.discovery_thread.completed.connect(self._osu_discovery_done)
+        self.discovery_thread.start()
+
+    def _osu_discovery_done(self, folder):
+        if folder:
+            self._activate_osu_folder(folder, persist=True)
+            self._start_beatmap_lookup()
+        else:
+            self.osu_label.setText("osu! installation not detected")
+
+    def _activate_osu_folder(self, folder, persist=True):
+        self.osu_folder = str(Path(folder))
+        self.settings["osu_folder"] = self.osu_folder
+        self.osu_label.setText(self.osu_folder)
+
+        if persist:
+            update_setting("osu_folder", self.osu_folder)
+
+        self.load_saved_skins()
+
     def _native_dialog_directory(self, path):
         directory = Path(path).expanduser()
         return str(directory if directory.exists() else Path.home())
@@ -405,12 +528,8 @@ class MainWindow(QMainWindow):
         if not folder:
             return
 
-        self.osu_folder = folder
-        self.settings["osu_folder"] = folder
-        update_setting("osu_folder", folder)
-        self.osu_label.setText(folder)
-        self.load_saved_skins()
-        self.try_auto_find_beatmap()
+        self._activate_osu_folder(folder)
+        self._start_beatmap_lookup()
 
     def select_replay(self):
         start_dir = (
@@ -427,34 +546,99 @@ class MainWindow(QMainWindow):
         self.settings["last_replay"] = file
         update_setting("last_replay", file)
         self.replay_label.setText(file)
-        self.load_replay_info()
-        self.try_auto_find_beatmap()
+        self._start_beatmap_lookup()
 
     def load_replay_info(self):
-        try:
-            info = get_replay_info(self.replay_file)
-            self.info_label.setText(
-                f"{info['username']}  |  {info['score']:,} score  |  {info['max_combo']}x  |  {info['mods']}"
-            )
-        except Exception as error:
-            self.info_label.setText("Replay could not be read")
-            QMessageBox.warning(self, "Replay error", str(error))
+        self._start_beatmap_lookup()
 
     def try_auto_find_beatmap(self):
-        if not self.osu_folder or not self.replay_file:
+        self._start_beatmap_lookup()
+
+    def _start_beatmap_lookup(self):
+        if not self.replay_file:
             return
 
+        if self.beatmap_thread and self.beatmap_thread.isRunning():
+            self.beatmap_thread.requestInterruption()
+
+        preferred_beatmap = self.settings.get("last_beatmap") or self.beatmap_file
+        self.beatmap_file = None
+        self.settings["last_beatmap"] = ""
+        self.render_button.setEnabled(False)
+        self.info_label.setText("Reading replay...")
         self.beatmap_label.setText("Searching for matching beatmap...")
-        found = find_beatmap_from_replay(self.osu_folder, self.replay_file)
+        self.lookup_progress.setRange(0, 0)
+        self.lookup_progress.show()
+        self.lookup_status.setText("Reading replay metadata...")
+        self.lookup_status.show()
+
+        thread = BeatmapLookupThread(self.osu_folder, self.replay_file, preferred_beatmap, self)
+        self.beatmap_thread = thread
+        thread.replay_loaded.connect(lambda info, owner=thread: self._replay_loaded(owner, info))
+        thread.progress.connect(lambda value, text, owner=thread: self._beatmap_lookup_progress(owner, value, text))
+        thread.completed.connect(lambda found, owner=thread: self._beatmap_lookup_done(owner, found))
+        thread.failed.connect(lambda error, owner=thread: self._beatmap_lookup_failed(owner, error))
+        thread.finished.connect(lambda owner=thread: self._beatmap_lookup_finished(owner))
+        thread.start()
+
+    def _beatmap_lookup_finished(self, owner):
+        if owner is self.beatmap_thread:
+            self.beatmap_thread = None
+
+        owner.deleteLater()
+
+    def _replay_loaded(self, owner, info):
+        if owner is not self.beatmap_thread:
+            return
+
+        self.info_label.setText(
+            f"{info['username']}  |  {info['score']:,} score  |  {info['max_combo']}x  |  {info['mods']}"
+        )
+
+    def _beatmap_lookup_progress(self, owner, value, text):
+        if owner is not self.beatmap_thread:
+            return
+
+        if value < 0:
+            self.lookup_progress.setRange(0, 0)
+        else:
+            self.lookup_progress.setRange(0, 100)
+            self.lookup_progress.setValue(value)
+
+        self.lookup_status.setText(text)
+
+    def _beatmap_lookup_done(self, owner, found):
+        if owner is not self.beatmap_thread:
+            return
+
+        self.lookup_progress.hide()
+        self.lookup_status.hide()
 
         if found:
             self.beatmap_file = found
+            self.settings["last_beatmap"] = found
             update_setting("last_beatmap", found)
             self.beatmap_label.setText(found)
+            self.render_button.setEnabled(True)
         else:
             self.beatmap_file = None
+            self.settings["last_beatmap"] = ""
             update_setting("last_beatmap", "")
-            self.beatmap_label.setText("Beatmap not found")
+            self.beatmap_label.setText(
+                "Beatmap not found" if self.osu_folder else "Select the osu! folder to search for the beatmap"
+            )
+            self.render_button.setEnabled(False)
+
+    def _beatmap_lookup_failed(self, owner, error):
+        if owner is not self.beatmap_thread:
+            return
+
+        self.lookup_progress.hide()
+        self.lookup_status.hide()
+        self.info_label.setText("Replay could not be read")
+        self.beatmap_label.setText("Beatmap search failed")
+        self.render_button.setEnabled(False)
+        QMessageBox.warning(self, "Replay error", error)
 
     def select_manual_beatmap(self):
         start_dir = (
@@ -468,8 +652,33 @@ class MainWindow(QMainWindow):
             return
 
         self.beatmap_file = file
+        self.settings["last_beatmap"] = file
         update_setting("last_beatmap", file)
         self.beatmap_label.setText(file)
+        self.render_button.setEnabled(bool(self.replay_file))
+
+        if self.beatmap_thread and self.beatmap_thread.isRunning():
+            self.beatmap_thread.requestInterruption()
+
+        self.beatmap_thread = None
+
+        self.lookup_progress.hide()
+        self.lookup_status.hide()
+
+    def closeEvent(self, event):
+        background_threads = (self.beatmap_thread, self.discovery_thread, self.update_thread)
+
+        for thread in background_threads:
+            if thread and thread.isRunning():
+                thread.requestInterruption()
+
+        deadline = 3000
+
+        for thread in background_threads:
+            if thread and thread.isRunning():
+                thread.wait(deadline)
+
+        super().closeEvent(event)
 
     def _render_options(self):
         return {
@@ -592,4 +801,13 @@ class MainWindow(QMainWindow):
     def update_check_failed(self, error):
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
-        QMessageBox.warning(self, "Update check failed", error)
+        answer = QMessageBox.question(
+            self,
+            "Update check unavailable",
+            f"{error}\n\nOpen GitHub Releases in your browser instead?",
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.Yes,
+        )
+
+        if answer == QMessageBox.Yes:
+            QDesktopServices.openUrl(QUrl(RELEASES_URL))
