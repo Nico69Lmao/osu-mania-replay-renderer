@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from osu_mania_replay_renderer.beatmap_parser import parse_osu
 from osu_mania_replay_renderer.osu_finder import (
     find_beatmap_by_hash,
     find_osu_folder,
@@ -228,6 +229,7 @@ class MainWindow(QMainWindow):
 
         self.layout_editor = LayoutEditor(self.layout_positions)
         self.layout_editor.positions_changed.connect(self._layout_positions_changed)
+        self.skin_combo.currentTextChanged.connect(self._skin_selection_changed)
         self.tabs.addTab(render_tab, "Render")
         self.tabs.addTab(self.layout_editor, "Layout")
         self.tabs.currentChanged.connect(self._animate_current_tab)
@@ -239,6 +241,27 @@ class MainWindow(QMainWindow):
         self.layout_positions = dict(positions)
         self.settings["layout_positions"] = dict(positions)
         update_setting("layout_positions", positions)
+
+    def _skin_selection_changed(self, value):
+        update_setting("last_skin", value)
+
+        if not hasattr(self, "layout_editor"):
+            return
+
+        skin_folder = None
+
+        if self.osu_folder and value and value != "No skin found":
+            skin_folder = str(Path(self.osu_folder) / "Skins" / value)
+
+        keys = 4
+
+        if self.beatmap_file:
+            try:
+                keys = parse_osu(self.beatmap_file).keys
+            except Exception:
+                pass
+
+        self.layout_editor.set_skin(skin_folder, keys)
 
     def _animate_current_tab(self, index):
         page = self.tabs.widget(index)
@@ -315,7 +338,6 @@ class MainWindow(QMainWindow):
         skin_label.setObjectName("fieldLabel")
         self.skin_combo = QComboBox()
         self.skin_combo.addItem("No skin found")
-        self.skin_combo.currentTextChanged.connect(lambda value: update_setting("last_skin", value))
         layout.addWidget(skin_label)
         layout.addWidget(self.skin_combo)
         layout.addStretch()
@@ -370,6 +392,8 @@ class MainWindow(QMainWindow):
         self.results_screen_check.setChecked(setting_bool(self.settings.get("show_results_screen", True)))
         self.hold_combo_colour_check = QCheckBox("Colour combo during holds")
         self.hold_combo_colour_check.setChecked(setting_bool(self.settings.get("colour_combo_during_holds", True)))
+        self.gpu_compositing_check = QCheckBox("GPU skin compositing")
+        self.gpu_compositing_check.setChecked(setting_bool(self.settings.get("gpu_compositing", True)))
 
         effects = QVBoxLayout()
         effects.setSpacing(8)
@@ -377,6 +401,7 @@ class MainWindow(QMainWindow):
         effects.addWidget(self.strain_graph_check)
         effects.addWidget(self.results_screen_check)
         effects.addWidget(self.hold_combo_colour_check)
+        effects.addWidget(self.gpu_compositing_check)
 
         layout.addRow("Resolution", self.resolution_combo)
         layout.addRow("Scroll speed", self.scroll_speed_spin)
@@ -550,6 +575,7 @@ class MainWindow(QMainWindow):
             self.skin_combo.addItem("No skin found")
 
         self.skin_combo.blockSignals(False)
+        self._skin_selection_changed(self.skin_combo.currentText())
 
     def _start_osu_discovery(self):
         if self.discovery_thread and self.discovery_thread.isRunning():
@@ -790,6 +816,7 @@ class MainWindow(QMainWindow):
             update_setting("last_beatmap", found)
             self.beatmap_label.setText(found)
             self.render_button.setEnabled(True)
+            self._skin_selection_changed(self.skin_combo.currentText())
         else:
             self.beatmap_file = None
             self.settings["last_beatmap"] = ""
@@ -826,6 +853,7 @@ class MainWindow(QMainWindow):
         update_setting("last_beatmap", file)
         self.beatmap_label.setText(file)
         self.render_button.setEnabled(bool(self.replay_file))
+        self._skin_selection_changed(self.skin_combo.currentText())
 
         if self.beatmap_thread and self.beatmap_thread.isRunning():
             self.beatmap_thread.requestInterruption()
@@ -865,6 +893,7 @@ class MainWindow(QMainWindow):
             "results_duration": self.results_duration_spin.value(),
             "show_results_screen": self.results_screen_check.isChecked(),
             "colour_combo_during_holds": self.hold_combo_colour_check.isChecked(),
+            "gpu_compositing": self.gpu_compositing_check.isChecked(),
             "layout_positions": self.layout_editor.positions(),
         }
 
@@ -879,6 +908,7 @@ class MainWindow(QMainWindow):
         update_setting("results_duration", str(options["results_duration"]))
         update_setting("show_results_screen", options["show_results_screen"])
         update_setting("colour_combo_during_holds", options["colour_combo_during_holds"])
+        update_setting("gpu_compositing", options["gpu_compositing"])
         update_setting("layout_positions", options["layout_positions"])
 
     def start_render(self):

@@ -26,6 +26,7 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Supports cancelling frame generation mid-render and removes partial frame streams and output files.
 - Provides a persistent drag-and-drop layout editor for the playfield, skin combo, judgements, statistics, key input, timeline, strain graph, and star rating.
 - Prefers the desktop file picker: GTK/Zenity or the XDG portal on Linux, KDE's KDialog, and Explorer on Windows.
+- Uses batched OpenGL/EGL skin compositing when a GPU context is available, with automatic CPU fallback and VA-API, QSV, or AMF video encoding.
 
 ## Project Files
 
@@ -34,6 +35,7 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 | `src/osu_mania_replay_renderer/__main__.py` | Package entry point. Initializes multiprocessing support, creates the PySide6 application, and opens the main window. |
 | `src/osu_mania_replay_renderer/gui.py` | Defines the desktop interface and background render thread. Handles osu! folder, replay, beatmap, skin, resolution, scroll speed, motion blur, output selection, and progress updates. |
 | `src/osu_mania_replay_renderer/layout_editor.py` | Provides the drag-and-drop 16:9 layout editor, normalized element coordinates, and the reset-to-skin-default action. |
+| `src/osu_mania_replay_renderer/gpu_compositor.py` | Caches skin PNGs as GPU textures and performs batched scaling and alpha compositing through a headless OpenGL/EGL context. |
 | `src/osu_mania_replay_renderer/renderer.py` | Core rendering engine. Calculates judgements, reconciles replay totals, draws gameplay and results frames, builds the strain graph, computes displayed pp, runs multiprocessing workers, invokes FFmpeg, and writes debug reports. |
 | `src/osu_mania_replay_renderer/beatmap_parser.py` | Parses `.osu` metadata, audio and background paths, mode, key count, OD, normal notes, and long notes. Also computes the beatmap MD5 used for database lookup. |
 | `src/osu_mania_replay_renderer/replay_parser.py` | Converts OSR replay frames into timestamped press and release events for each mania lane. |

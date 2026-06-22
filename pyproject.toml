@@ -12,6 +12,7 @@ dependencies = [
     "numpy",
     "opencv-python",
     "imageio-ffmpeg",
+    "moderngl>=5.12.0",
     "osrparse",
     "PySide6",
 ]

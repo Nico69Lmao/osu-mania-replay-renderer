@@ -19,6 +19,8 @@ from osu_mania_replay_renderer.osu_db_reader import read_mania_star_rating
 
 CTX = {}
 RESIZE_CACHE = {}
+ALPHA_BBOX_CACHE = {}
+GPU_COMPOSITOR = None
 FRAME_STREAM = None
 FFMPEG_BINARY = None
 MANIA_MAX_TIME_RANGE_MS = 11485.0
@@ -144,15 +146,16 @@ def resize_texture(img, width, height, interpolation=cv2.INTER_AREA):
         return img
 
     if not img.flags.writeable:
-        key = (id(img), width, height, interpolation)
+        pointer = int(img.__array_interface__["data"][0])
+        key = (pointer, img.shape, img.strides, width, height, interpolation)
         cached = RESIZE_CACHE.get(key)
 
-        if cached is not None and cached[0] is img:
-            return cached[1]
+        if cached is not None:
+            return cached
 
         resized = cv2.resize(img, (width, height), interpolation=interpolation)
         resized.flags.writeable = False
-        RESIZE_CACHE[key] = (img, resized)
+        RESIZE_CACHE[key] = resized
         return resized
 
     return cv2.resize(img, (width, height), interpolation=interpolation)
@@ -160,6 +163,12 @@ def resize_texture(img, width, height, interpolation=cv2.INTER_AREA):
 
 def paste_rgba(frame, img, x, y, w=None, h=None):
     if img is None:
+        return
+
+    if GPU_COMPOSITOR is not None:
+        target_width = w if w is not None else img.shape[1]
+        target_height = h if h is not None else img.shape[0]
+        GPU_COMPOSITOR.queue(img, x, y, target_width, target_height)
         return
 
     if w and h:
@@ -206,12 +215,9 @@ def paste_rgba_centered(frame, img, cx, cy, scale=1.0, max_width=None):
         w = int(w * ratio)
         h = int(h * ratio)
 
-    img = resize_texture(img, w, h)
-
     x = int(cx - w / 2)
     y = int(cy - h / 2)
-
-    paste_rgba(frame, img, x, y)
+    paste_rgba(frame, img, x, y, w, h)
 
 
 def paste_rgba_bottom_centered(frame, img, cx, bottom_y, scale=1.0, max_width=None):
@@ -227,24 +233,37 @@ def paste_rgba_bottom_centered(frame, img, cx, bottom_y, scale=1.0, max_width=No
         w = int(w * ratio)
         h = int(h * ratio)
 
-    img = resize_texture(img, w, h)
-
     x = int(cx - w / 2)
     y = int(bottom_y - h)
-
-    paste_rgba(frame, img, x, y)
+    paste_rgba(frame, img, x, y, w, h)
 
 
 def alpha_bbox(img, threshold=8):
     if img is None or len(img.shape) < 3 or img.shape[2] < 4:
         return None
 
+    cache_key = None
+
+    if not img.flags.writeable:
+        pointer = int(img.__array_interface__["data"][0])
+        cache_key = (pointer, img.shape, img.strides, threshold)
+
+        if cache_key in ALPHA_BBOX_CACHE:
+            return ALPHA_BBOX_CACHE[cache_key]
+
     ys, xs = np.where(img[:, :, 3] > threshold)
 
     if len(xs) == 0:
+        if cache_key is not None:
+            ALPHA_BBOX_CACHE[cache_key] = None
         return None
 
-    return xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+    result = xs.min(), ys.min(), xs.max() + 1, ys.max() + 1
+
+    if cache_key is not None:
+        ALPHA_BBOX_CACHE[cache_key] = result
+
+    return result
 
 
 def has_visible_alpha(img):
@@ -291,11 +310,14 @@ def paste_rgba_centered_sized(frame, img, cx, cy, width, height, crop_alpha=Fals
             x1, y1, x2, y2 = bbox
             img = img[y1:y2, x1:x2]
 
-    img = resize_texture(img, width, height)
     x = int(cx - width / 2)
     y = int(cy - height / 2)
+    paste_rgba(frame, img, x, y, width, height)
 
-    paste_rgba(frame, img, x, y)
+
+def flush_gpu(frame):
+    if GPU_COMPOSITOR is not None:
+        GPU_COMPOSITOR.flush(frame)
 
 
 def select_skin_glyph(variants, height):
@@ -340,14 +362,6 @@ def draw_skin_text(
 
         if image is None:
             return False
-
-        bbox = alpha_bbox(image)
-
-        if bbox:
-            _, y1, _, y2 = bbox
-            # Preserve horizontal canvas/advance because ComboOverlap and
-            # ScoreOverlap are defined against the original glyph width.
-            image = image[y1:y2, :]
 
         scale = coordinate_scale / density
         selected.append((
@@ -395,11 +409,9 @@ def measure_skin_text(text, glyphs, overlap, coordinate_scale, frame_height):
         if image is None:
             return None
 
-        bbox = alpha_bbox(image)
-        visible_height = bbox[3] - bbox[1] if bbox else image.shape[0]
         scale = coordinate_scale / density
         widths.append(max(1, int(image.shape[1] * scale)))
-        heights.append(max(1, int(visible_height * scale)))
+        heights.append(max(1, int(image.shape[0] * scale)))
 
     if not widths:
         return None
@@ -429,8 +441,14 @@ def paste_ln_body(frame, img, cx, top_y, bottom_y, target_width):
     source_needed = max(1, min(source_h, int(body_h / scale) + 2))
     source = source[:source_needed]
 
-    body = cv2.resize(source, (max(1, target_width), max(1, body_h)), interpolation=cv2.INTER_AREA)
-    paste_rgba(frame, body, int(cx - target_width / 2), int(top_y))
+    paste_rgba(
+        frame,
+        source,
+        int(cx - target_width / 2),
+        int(top_y),
+        max(1, target_width),
+        max(1, body_h),
+    )
 
 
 def scaled_size_for_width(img, target_width, scale=1.0):
@@ -912,10 +930,17 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
 
 
 def init_worker(ctx):
-    global CTX, RESIZE_CACHE
+    global CTX, RESIZE_CACHE, ALPHA_BBOX_CACHE, GPU_COMPOSITOR
     cv2.setNumThreads(1)
     CTX = ctx
     RESIZE_CACHE = {}
+    ALPHA_BBOX_CACHE = {}
+    GPU_COMPOSITOR = None
+
+    if ctx.get("gpu_compositing"):
+        from osu_mania_replay_renderer.gpu_compositor import create_gpu_compositor
+
+        GPU_COMPOSITOR = create_gpu_compositor()
 
 
 def process_pool_smoke_worker(value):
@@ -959,6 +984,7 @@ def draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, 
                 crop_alpha=True,
             )
         else:
+            flush_gpu(frame)
             receptor_w = receptor_size
             receptor_h = receptor_size
             receptor_x = center_x - receptor_w // 2
@@ -1067,20 +1093,11 @@ def draw_hit_judgements(
         )
 
 
-def draw_judgement_counter(frame, judgements, map_time, width, top_y, right_x=None):
-    counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
-
-    for judgement in judgements:
-        if not judgement.get("counts_accuracy", True):
-            continue
-
-        display_time = judgement.get("display_time", judgement["time"])
-
-        if display_time > map_time:
-            break
-
-        key = judgement.get("image_key") or hit_image_key(judgement["value"], judgement.get("diff"))
-        counts[key] = counts.get(key, 0) + 1
+def draw_judgement_counter(frame, judgements, map_time, width, top_y, right_x=None, counts=None):
+    if counts is None:
+        counts = judgement_counts_at(judgements, map_time)
+    else:
+        counts = dict(counts)
 
     labels = [
         ("300g", counts["300g"], (120, 235, 255)),
@@ -1146,8 +1163,8 @@ def judgement_counts_at(judgements, map_time):
     return counts
 
 
-def draw_pp_counter(frame, judgements, map_time, width, y, star_rating, right_x=None):
-    counts = judgement_counts_at(judgements, map_time)
+def draw_pp_counter(frame, judgements, map_time, width, y, star_rating, right_x=None, counts=None):
+    counts = counts if counts is not None else judgement_counts_at(judgements, map_time)
     pp = mania_pp_value(star_rating, counts)
     text = "pp: N/A" if pp is None else f"pp: {pp:.2f}"
     ui_scale = overlay_scale(frame.shape[0])
@@ -1740,6 +1757,8 @@ def draw_results_screen(
 
 
 def write_render_frame(output_dir, frame_id, frame):
+    flush_gpu(frame)
+
     if FRAME_STREAM is not None:
         ok, encoded = cv2.imencode(
             ".jpg",
@@ -1792,6 +1811,8 @@ def frame_worker(frame_id):
     judgements = CTX["judgements"]
     display_judgements = CTX.get("display_judgements", judgements)
     judgement_times = CTX.get("judgement_times") or [j.get("display_time", j["time"]) for j in display_judgements]
+    combo_changed_times = CTX.get("combo_changed_times", [])
+    cumulative_counts = CTX.get("cumulative_counts", [])
     events = CTX["events"]
     event_lanes = CTX.get("event_lanes", [])
     ln_hold_lanes = CTX.get("ln_hold_lanes", [])
@@ -1866,6 +1887,7 @@ def frame_worker(frame_id):
         stage_img = skin["stage_right"]
         paste_rgba(frame, stage_img, width - stage_img.shape[1], height - stage_img.shape[0])
 
+    flush_gpu(frame)
     cv2.rectangle(frame, (play_x - 16, top_y), (play_x + play_width + 16, height), (0, 0, 0), -1)
 
     for lane in range(keys):
@@ -1873,20 +1895,19 @@ def frame_worker(frame_id):
         fill_rgba_rect(frame, lane_xs[lane], top_y, lane_xs[lane] + column_widths[lane], height, colour)
 
     ui_scale = overlay_scale(height)
-    combo = 0
-    accuracy = 100.0
-    combo_changed_at = None
-    for j in display_judgements:
-        display_time = j.get("display_time", j["time"])
+    state_i = bisect_right(judgement_times, map_time) - 1
 
-        if display_time <= map_time:
-            if j["combo"] > combo:
-                combo_changed_at = display_time
-            combo = j["combo"]
-            if j.get("counts_accuracy", True):
-                accuracy = j["accuracy"]
-        else:
-            break
+    if state_i >= 0:
+        state = display_judgements[state_i]
+        combo = state["combo"]
+        accuracy = state["accuracy"]
+        combo_changed_at = combo_changed_times[state_i]
+        current_counts = cumulative_counts[state_i]
+    else:
+        combo = 0
+        accuracy = 100.0
+        combo_changed_at = None
+        current_counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
 
     visible_margin = 500
     visible_start = map_time - visible_margin
@@ -1981,6 +2002,7 @@ def frame_worker(frame_id):
                     body_h = max(1, visible_bottom - visible_top)
                     paste_ln_body(frame, body_img, center_x, visible_top, visible_top + body_h, note_w)
                 else:
+                    flush_gpu(frame)
                     cv2.rectangle(
                         frame,
                         (note_x, visible_top),
@@ -2017,6 +2039,7 @@ def frame_worker(frame_id):
             if note_img is not None:
                 paste_rgba_centered(frame, note_img, center_x, y_head, scale=skin_scale, max_width=note_w)
             else:
+                flush_gpu(frame)
                 cv2.rectangle(
                     frame,
                     (note_x, y_head - note_h // 2),
@@ -2026,9 +2049,11 @@ def frame_worker(frame_id):
                 )
 
     if motion_blur > 0:
+        flush_gpu(frame)
         apply_motion_blur(frame, play_x - 16, top_y, play_width + 32, height, motion_blur)
 
     draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale)
+    flush_gpu(frame)
     if show_strain_graph:
         draw_difficulty_graph(
             frame,
@@ -2058,7 +2083,9 @@ def frame_worker(frame_id):
     if not cfg["keys_under_notes"]:
         draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths)
 
-    apply_vignette(frame, vignette_mask)
+    if vignette_mask is not None:
+        flush_gpu(frame)
+        apply_vignette(frame, vignette_mask)
     draw_hit_judgements(
         frame,
         skin,
@@ -2110,6 +2137,8 @@ def frame_worker(frame_id):
         if not native_combo_drawn:
             draw_ui_text(frame, str(combo), (play_center_x, combo_center_y), 0.58 * ui_scale * bounce, anchor="center")
 
+    flush_gpu(frame)
+
     if show_side_overlay:
         custom_stats = layout_point(layout_positions, "side_stats", width, height)
         right_x = custom_stats[0] if custom_stats is not None else width - int(24 * ui_scale)
@@ -2118,7 +2147,15 @@ def frame_worker(frame_id):
         stats_y += int(32 * ui_scale)
         draw_ui_text(frame, f"{accuracy:.2f}%", (right_x, stats_y), 0.58 * ui_scale, (225, 225, 230), 1, "right")
         stats_y += int(38 * ui_scale)
-        stats_y = draw_judgement_counter(frame, judgements, map_time, width, stats_y, right_x)
+        stats_y = draw_judgement_counter(
+            frame,
+            judgements,
+            map_time,
+            width,
+            stats_y,
+            right_x,
+            current_counts,
+        )
         stats_y = draw_pp_counter(
             frame,
             judgements,
@@ -2127,6 +2164,7 @@ def frame_worker(frame_id):
             stats_y + int(10 * ui_scale),
             star_rating,
             right_x,
+            current_counts,
         )
         stats_y = draw_key_input_overlay(
             frame,
@@ -2444,6 +2482,7 @@ def render_video(
     results_duration=4.5,
     show_results_screen=True,
     colour_combo_during_holds=True,
+    gpu_compositing=True,
     layout_positions=None,
     cancel_callback=None,
 ):
@@ -2543,15 +2582,23 @@ def render_video(
     total_frames = max(1, int(real_duration_ms / 1000 * fps))
     scroll_time_ms = mania_scroll_time_ms(scroll_speed_value)
 
+    gpu_renderer = None
+
+    if gpu_compositing:
+        from osu_mania_replay_renderer.gpu_compositor import detect_gpu_renderer
+
+        gpu_renderer = detect_gpu_renderer()
+
     workers = max(1, min(os.cpu_count() or 1, 8))
     megapixels = (width * height) / 1_000_000
-    estimated_render_fps = max(4.0, workers * (9.0 / max(1.0, megapixels)))
+    estimated_render_fps = max(4.0, workers * ((12.0 if gpu_renderer else 9.0) / max(1.0, megapixels)))
     estimated_seconds = total_frames / estimated_render_fps
+    render_backend = f"GPU: {gpu_renderer}" if gpu_renderer else "CPU compositing"
 
     if progress_callback:
         progress_callback(
             0,
-            f"Preparing render: {total_frames} frames | Estimated render time: ~{format_duration(estimated_seconds)}"
+            f"Preparing render: {total_frames} frames | {render_backend} | ETA: ~{format_duration(estimated_seconds)}"
         )
 
     temp_dir = Path(tempfile.mkdtemp(prefix=".mania-render-", dir=str(Path(output_file).parent)))
@@ -2622,6 +2669,26 @@ def render_video(
         ))
 
     display_judgements = sorted(judgements, key=lambda j: j.get("display_time", j["time"]))
+    cumulative_counts = []
+    running_counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
+    combo_changed_times = []
+    previous_combo = 0
+    last_combo_change = None
+
+    for judgement in display_judgements:
+        display_time = judgement.get("display_time", judgement["time"])
+
+        if judgement["combo"] > previous_combo:
+            last_combo_change = display_time
+
+        previous_combo = judgement["combo"]
+        combo_changed_times.append(last_combo_change)
+
+        if judgement.get("counts_accuracy", True):
+            key = judgement.get("image_key") or hit_image_key(judgement["value"], judgement.get("diff"))
+            running_counts[key] = running_counts.get(key, 0) + 1
+
+        cumulative_counts.append(running_counts.copy())
 
     ctx = {
         "width": width,
@@ -2649,6 +2716,8 @@ def render_video(
         "judgements": judgements,
         "display_judgements": display_judgements,
         "judgement_times": [j.get("display_time", j["time"]) for j in display_judgements],
+        "combo_changed_times": combo_changed_times,
+        "cumulative_counts": cumulative_counts,
         "events": events,
         "event_lanes": event_lanes,
         "ln_hold_lanes": ln_hold_lanes,
@@ -2670,6 +2739,7 @@ def render_video(
         "show_strain_graph": bool(show_strain_graph),
         "colour_combo_during_holds": bool(colour_combo_during_holds),
         "layout_positions": layout_positions or {},
+        "gpu_compositing": bool(gpu_renderer),
         "vignette_mask": vignette_mask,
     }
 
@@ -2700,6 +2770,8 @@ def render_video(
             "show_results_screen": bool(show_results_screen),
             "colour_combo_during_holds": bool(colour_combo_during_holds),
             "layout_positions": layout_positions or {},
+            "gpu_compositing": bool(gpu_renderer),
+            "gpu_renderer": gpu_renderer,
         },
     )
 

@@ -33,6 +33,7 @@ DEFAULT_SETTINGS = {
     "results_duration": "4.5",
     "show_results_screen": True,
     "colour_combo_during_holds": True,
+    "gpu_compositing": True,
     "layout_positions": {},
 }
 

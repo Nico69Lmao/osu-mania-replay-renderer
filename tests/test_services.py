@@ -15,6 +15,7 @@ from osu_mania_replay_renderer.renderer import (
     RenderCancelled,
     draw_difficulty_graph,
     draw_key_input_overlay,
+    draw_skin_text,
     ensure_not_cancelled,
     layout_point,
 )
@@ -164,6 +165,44 @@ class RendererControlTests(unittest.TestCase):
             (900, 650),
         )
         self.assertTrue(np.any(np.all(strain == 0, axis=2)))
+
+    def test_skin_font_preserves_punctuation_baseline(self):
+        digit = np.zeros((10, 5, 4), dtype=np.uint8)
+        digit[1:9, 1:4, :3] = 255
+        digit[1:9, 1:4, 3] = 255
+        dot = np.zeros((10, 5, 4), dtype=np.uint8)
+        dot[8:10, 2:4, :3] = 255
+        dot[8:10, 2:4, 3] = 255
+        digit.flags.writeable = False
+        dot.flags.writeable = False
+        glyphs = {"1": {1.0: digit}, ".": {1.0: dot}}
+        frame = np.zeros((14, 24, 3), dtype=np.uint8)
+
+        self.assertTrue(draw_skin_text(frame, "1.", glyphs, 12, 0, 0, 1.0))
+        self.assertTrue(np.any(frame[8:10, 12:17] > 0))
+        self.assertFalse(np.any(frame[:5, 12:17] > 0))
+
+    def test_gpu_compositor_matches_alpha_blending_when_available(self):
+        from osu_mania_replay_renderer.gpu_compositor import create_gpu_compositor
+
+        compositor = create_gpu_compositor()
+
+        if compositor is None:
+            self.skipTest("No headless OpenGL context is available")
+
+        try:
+            frame = np.zeros((8, 10, 3), dtype=np.uint8)
+            frame[0, :, 0] = 16
+            image = np.zeros((4, 4, 4), dtype=np.uint8)
+            image[:, :, 2] = 200
+            image[:, :, 3] = 128
+            image.flags.writeable = False
+            compositor.queue(image, 2, 2, 4, 4)
+            compositor.flush(frame)
+            self.assertTrue(np.all(frame[0, :, 0] == 16))
+            self.assertIn(int(frame[3, 3, 2]), range(99, 102))
+        finally:
+            compositor.release()
 
 if __name__ == "__main__":
     unittest.main()
