@@ -4,6 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 import shutil
+import multiprocessing as mp
 from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 from bisect import bisect_left, bisect_right
 import os
@@ -878,6 +879,25 @@ def init_worker(ctx):
     cv2.setNumThreads(1)
     CTX = ctx
     RESIZE_CACHE = {}
+
+
+def process_pool_smoke_worker(value):
+    """Small picklable worker used to validate frozen multiprocessing builds."""
+    return os.getpid(), CTX.get("pool_smoke"), value * value
+
+
+def run_process_pool_smoke_test():
+    context = mp.get_context("spawn")
+
+    with ProcessPoolExecutor(
+        max_workers=1,
+        mp_context=context,
+        initializer=init_worker,
+        initargs=({"pool_smoke": "ready"},),
+    ) as executor:
+        child_pid, marker, result = executor.submit(process_pool_smoke_worker, 7).result(timeout=30)
+
+    return child_pid != os.getpid() and marker == "ready" and result == 49
 
 
 def draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, note_widths):
@@ -2560,7 +2580,12 @@ def render_video(
     if progress_callback:
         progress_callback(0, f"Frame: 0/{total_frames} | ETA: calculating...")
 
-    with ProcessPoolExecutor(max_workers=workers, initializer=init_worker, initargs=(ctx,)) as executor:
+    with ProcessPoolExecutor(
+        max_workers=workers,
+        mp_context=mp.get_context("spawn"),
+        initializer=init_worker,
+        initargs=(ctx,),
+    ) as executor:
         next_frame = 0
         futures = set()
         batch_size = max(8, min(30, total_frames // max(1, workers * 8)))
