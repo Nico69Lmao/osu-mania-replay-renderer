@@ -21,7 +21,7 @@ from osu_mania_replay_renderer.renderer import (
     ensure_not_cancelled,
     layout_point,
 )
-from osu_mania_replay_renderer.layout_editor import layout_definitions
+from osu_mania_replay_renderer.layout_model import layout_definitions
 
 
 class JsonResponse(io.BytesIO):
