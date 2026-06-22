@@ -1,5 +1,5 @@
-SCENE_WIDTH = 640
-SCENE_HEIGHT = 360
+SCENE_WIDTH = 1920
+SCENE_HEIGHT = 1080
 SKIN_SCALE = SCENE_HEIGHT / 480.0
 LAYOUT_POSITIONS = {
     "playfield": (0.50, 0.50),
@@ -12,14 +12,14 @@ LAYOUT_POSITIONS = {
     "star_rating": (0.08, 0.82),
 }
 DEFAULT_SIZES = {
-    "playfield": (150, 360),
-    "combo": (34, 34),
-    "judgement": (30, 30),
-    "side_stats": (74, 104),
-    "key_input": (50, 90),
-    "timeline": (52, 18),
-    "strain_graph": (166, 33),
-    "star_rating": (50, 14),
+    "playfield": (450, 1080),
+    "combo": (102, 102),
+    "judgement": (90, 90),
+    "side_stats": (222, 312),
+    "key_input": (150, 270),
+    "timeline": (156, 54),
+    "strain_graph": (498, 99),
+    "star_rating": (150, 42),
 }
 
 

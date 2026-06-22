@@ -35,7 +35,8 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 | --- | --- |
 | `src/osu_mania_replay_renderer/__main__.py` | Package entry point. Initializes multiprocessing support, creates the PySide6 application, and opens the main window. |
 | `src/osu_mania_replay_renderer/gui.py` | Defines the desktop interface and background render thread. Handles osu! folder, replay, beatmap, skin, resolution, scroll speed, motion blur, output selection, and progress updates. |
-| `src/osu_mania_replay_renderer/layout_editor.py` | Provides the drag-and-drop 16:9 layout editor, normalized element coordinates, and the reset-to-skin-default action. |
+| `src/osu_mania_replay_renderer/layout_editor.py` | Provides the drag-and-drop Full HD layout editor, normalized element coordinates, and the reset-to-skin-default action. |
+| `src/osu_mania_replay_renderer/layout_model.py` | Calculates renderer-scale element dimensions in a logical `1920x1080` coordinate space without depending on Qt. |
 | `src/osu_mania_replay_renderer/gpu_compositor.py` | Caches skin PNGs as GPU textures and performs batched scaling and alpha compositing through a headless OpenGL/EGL context. |
 | `src/osu_mania_replay_renderer/renderer.py` | Core rendering engine. Calculates judgements, reconciles replay totals, draws gameplay and results frames, builds the strain graph, computes displayed pp, runs multiprocessing workers, invokes FFmpeg, and writes debug reports. |
 | `src/osu_mania_replay_renderer/beatmap_parser.py` | Parses `.osu` metadata, audio and background paths, mode, key count, OD, normal notes, and long notes. Also computes the beatmap MD5 used for database lookup. |

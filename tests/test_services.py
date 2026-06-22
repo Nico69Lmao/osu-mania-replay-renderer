@@ -21,7 +21,7 @@ from osu_mania_replay_renderer.renderer import (
     ensure_not_cancelled,
     layout_point,
 )
-from osu_mania_replay_renderer.layout_model import layout_definitions
+from osu_mania_replay_renderer.layout_model import SCENE_HEIGHT, SCENE_WIDTH, layout_definitions
 
 
 class JsonResponse(io.BytesIO):
@@ -214,6 +214,7 @@ class RendererControlTests(unittest.TestCase):
             compositor.release()
 
     def test_layout_preview_uses_renderer_skin_scale(self):
+        self.assertEqual((SCENE_WIDTH, SCENE_HEIGHT), (1920, 1080))
         glyph = np.zeros((100, 26, 4), dtype=np.uint8)
         glyph[:, :, 3] = 255
         judgement = np.zeros((50, 50, 4), dtype=np.uint8)
@@ -230,9 +231,9 @@ class RendererControlTests(unittest.TestCase):
             "hit_image_densities": {"300": 1.0},
         }
         definitions = layout_definitions(skin)
-        self.assertEqual(definitions["playfield"]["size"], (214, 360))
-        self.assertEqual(definitions["combo"]["size"], (21, 27))
-        self.assertEqual(definitions["judgement"]["size"], (23, 23))
+        self.assertEqual(definitions["playfield"]["size"], (646, 1080))
+        self.assertEqual(definitions["combo"]["size"], (61, 81))
+        self.assertEqual(definitions["judgement"]["size"], (70, 70))
 
     def test_hit_lighting_uses_additive_blending(self):
         lighting = np.zeros((10, 10, 4), dtype=np.uint8)

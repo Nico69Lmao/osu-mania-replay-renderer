@@ -24,7 +24,9 @@ from osu_mania_replay_renderer.layout_model import (
 )
 
 
-EDGE_WARNING_DISTANCE = 10
+DISPLAY_UNIT = SCENE_HEIGHT / 360.0
+EDGE_WARNING_DISTANCE = int(10 * DISPLAY_UNIT)
+SCALED_OVERLAY_KEYS = {"side_stats", "key_input", "timeline", "strain_graph", "star_rating"}
 
 
 def visible_crop(image):
@@ -117,6 +119,11 @@ def preview_pixmap(key, definition, skin):
     font.setWeight(QFont.DemiBold)
     painter.setFont(font)
 
+    if key in SCALED_OVERLAY_KEYS:
+        painter.scale(DISPLAY_UNIT, DISPLAY_UNIT)
+        width = int(width / DISPLAY_UNIT)
+        height = int(height / DISPLAY_UNIT)
+
     if key == "playfield":
         painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 225))
         keys = max(1, len(skin.get("keys", [])))
@@ -132,13 +139,13 @@ def preview_pixmap(key, definition, skin):
             lane_width = lane_widths[lane]
             x = lane_x
             painter.fillRect(QRectF(x, 0, lane_width, height), QColor(9, 11, 12, 245))
-            painter.setPen(QPen(QColor(92, 98, 102), 0.8))
+            painter.setPen(QPen(QColor(92, 98, 102), 0.8 * DISPLAY_UNIT))
             painter.drawLine(x, 0, x, height)
             note = skin.get("notes", [None] * keys)[lane]
             receptor = visible_crop(skin.get("keys", [None] * keys)[lane])
             note_width = max(1, int(lane_width * 0.94))
             note_height = max(1, int(note.shape[0] * note_width / note.shape[1])) if note is not None else note_width
-            note_y = 40 + lane * 35
+            note_y = (40 + lane * 35) * DISPLAY_UNIT
             draw_exact(painter, note, x + (lane_width - note_width) / 2, note_y, note_width, note_height)
             receptor_center_y = judge_y - note_width // 2
             draw_exact(
@@ -168,7 +175,7 @@ def preview_pixmap(key, definition, skin):
                 cover_height,
             )
 
-        painter.setPen(QPen(QColor(92, 98, 102), 0.8))
+        painter.setPen(QPen(QColor(92, 98, 102), 0.8 * DISPLAY_UNIT))
         painter.drawLine(width - 1, 0, width - 1, height)
     elif key == "combo":
         if not draw_combo_preview(painter, skin, width, height):
@@ -182,7 +189,7 @@ def preview_pixmap(key, definition, skin):
         if not draw_fitted(painter, image, QRectF(pixmap.rect()), 0):
             painter.drawText(pixmap.rect(), Qt.AlignCenter, "300")
     elif key == "side_stats":
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 242))
+        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 242))
         large_font = QFont("Sans Serif", 8)
         large_font.setWeight(QFont.DemiBold)
         painter.setFont(large_font)
@@ -196,7 +203,7 @@ def preview_pixmap(key, definition, skin):
             "300g  82\n300   46\n200    3\n100    1\n50     0\nMiss   0",
         )
     elif key == "key_input":
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 238))
+        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 238))
         lane_width = 7
         gap = 4
         start_x = int((width - (lane_width * 4 + gap * 3)) / 2)
@@ -217,7 +224,7 @@ def preview_pixmap(key, definition, skin):
         painter.setFont(QFont("Sans Serif", 5))
         painter.drawText(QRectF(19, 0, width - 20, height), Qt.AlignVCenter | Qt.AlignLeft, "1:42")
     elif key == "strain_graph":
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 238))
+        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 238))
         points = QPolygonF([
             QPointF(2, height - 4), QPointF(width * 0.18, height * 0.35), QPointF(width * 0.34, height * 0.72),
             QPointF(width * 0.49, height * 0.16), QPointF(width * 0.66, height * 0.58),
@@ -226,9 +233,9 @@ def preview_pixmap(key, definition, skin):
         painter.setPen(QPen(QColor(75, 224, 104), 2))
         painter.drawPolyline(points)
     else:
-        painter.fillRect(pixmap.rect(), QColor(0, 0, 0, 210))
+        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 210))
         painter.setFont(QFont("Sans Serif", 6))
-        painter.drawText(pixmap.rect(), Qt.AlignCenter, "SR 5.82*")
+        painter.drawText(QRectF(0, 0, width, height), Qt.AlignCenter, "SR 5.82*")
 
     painter.end()
     return pixmap
@@ -278,8 +285,9 @@ class MovableLayoutItem(QGraphicsPixmapItem):
             colour = QColor("#63d6e6")
 
         painter.setBrush(Qt.NoBrush)
-        painter.setPen(QPen(colour, 2.4 if self.isSelected() else 1.4))
-        painter.drawRect(bounds.adjusted(1, 1, -1, -1))
+        painter.setPen(QPen(colour, (2.4 if self.isSelected() else 1.4) * DISPLAY_UNIT))
+        inset = DISPLAY_UNIT
+        painter.drawRect(bounds.adjusted(inset, inset, -inset, -inset))
 
     def mousePressEvent(self, event):
         self.setCursor(Qt.ClosedHandCursor)
@@ -312,7 +320,7 @@ class LayoutEditor(QWidget):
         layout.setSpacing(12)
 
         toolbar = QHBoxLayout()
-        status = QLabel("Canvas 16:9")
+        status = QLabel("Canvas 1920 x 1080")
         status.setObjectName("layoutStatus")
         toolbar.addWidget(status)
         toolbar.addStretch()
@@ -338,19 +346,21 @@ class LayoutEditor(QWidget):
             self._position_item(item, self.custom_positions.get(key, definition["position"]))
 
     def _draw_canvas_guides(self):
-        border = self.scene.addRect(1, 1, SCENE_WIDTH - 2, SCENE_HEIGHT - 2, QPen(QColor("#dce4e8"), 2.2))
+        unit = DISPLAY_UNIT
+        border = self.scene.addRect(unit, unit, SCENE_WIDTH - 2 * unit, SCENE_HEIGHT - 2 * unit, QPen(QColor("#dce4e8"), 2.2 * unit))
         border.setZValue(-10)
-        safe_pen = QPen(QColor("#69747a"), 1, Qt.DashLine)
-        safe = self.scene.addRect(12, 12, SCENE_WIDTH - 24, SCENE_HEIGHT - 24, safe_pen)
+        margin = 12 * unit
+        safe_pen = QPen(QColor("#69747a"), unit, Qt.DashLine)
+        safe = self.scene.addRect(margin, margin, SCENE_WIDTH - 2 * margin, SCENE_HEIGHT - 2 * margin, safe_pen)
         safe.setZValue(-10)
-        guide_pen = QPen(QColor(74, 82, 87, 150), 1, Qt.DashLine)
+        guide_pen = QPen(QColor(74, 82, 87, 150), unit, Qt.DashLine)
 
         for x in (SCENE_WIDTH / 2,):
-            guide = self.scene.addLine(x, 12, x, SCENE_HEIGHT - 12, guide_pen)
+            guide = self.scene.addLine(x, margin, x, SCENE_HEIGHT - margin, guide_pen)
             guide.setZValue(-10)
 
         for y in (SCENE_HEIGHT / 2,):
-            guide = self.scene.addLine(12, y, SCENE_WIDTH - 12, y, guide_pen)
+            guide = self.scene.addLine(margin, y, SCENE_WIDTH - margin, y, guide_pen)
             guide.setZValue(-10)
 
     def set_skin(self, skin_folder, keys=4):
