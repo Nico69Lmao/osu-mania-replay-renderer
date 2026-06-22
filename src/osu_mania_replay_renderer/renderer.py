@@ -22,6 +22,8 @@ RESIZE_CACHE = {}
 ALPHA_BBOX_CACHE = {}
 GPU_COMPOSITOR = None
 FRAME_STREAM = None
+PREVIOUS_RENDER_FRAME = None
+PREVIOUS_RENDER_FRAME_ID = None
 FFMPEG_BINARY = None
 MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
@@ -538,25 +540,20 @@ def mania_scroll_time_ms(scroll_speed_value):
     return max(MANIA_MIN_TIME_RANGE_MS, MANIA_MAX_TIME_RANGE_MS / scroll_speed)
 
 
-def apply_motion_blur(frame, x, y, w, h, strength):
-    strength = int(strength)
+def apply_temporal_motion_blur(frame, previous_frame, strength):
+    strength = max(0, int(strength))
 
-    if strength <= 0:
+    if strength <= 0 or previous_frame is None or previous_frame.shape != frame.shape:
         return
 
+    difference = cv2.absdiff(frame, previous_frame)
+    change = np.max(difference, axis=2)
+    mask = np.where(change > 6, 255, 0).astype(np.uint8)
     kernel_size = max(3, strength * 2 + 1)
-    kernel = np.zeros((kernel_size, 1), dtype=np.float32)
-    kernel[:, 0] = 1.0 / kernel_size
-
-    x1 = max(0, int(x))
-    y1 = max(0, int(y))
-    x2 = min(frame.shape[1], int(x + w))
-    y2 = min(frame.shape[0], int(y + h))
-
-    if x2 <= x1 or y2 <= y1:
-        return
-
-    frame[y1:y2, x1:x2] = cv2.filter2D(frame[y1:y2, x1:x2], -1, kernel)
+    mask = cv2.GaussianBlur(mask, (kernel_size, kernel_size), 0)
+    alpha = (mask.astype(np.float32) / 255.0 * min(0.58, 0.18 + strength * 0.05))[:, :, None]
+    blended = frame.astype(np.float32) * (1.0 - alpha) + previous_frame.astype(np.float32) * alpha
+    frame[:] = np.clip(blended, 0, 255).astype(np.uint8)
 
 
 def create_vignette_mask(width, height, strength):
@@ -970,11 +967,14 @@ def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_con
 
 def init_worker(ctx):
     global CTX, RESIZE_CACHE, ALPHA_BBOX_CACHE, GPU_COMPOSITOR
+    global PREVIOUS_RENDER_FRAME, PREVIOUS_RENDER_FRAME_ID
     cv2.setNumThreads(1)
     CTX = ctx
     RESIZE_CACHE = {}
     ALPHA_BBOX_CACHE = {}
     GPU_COMPOSITOR = None
+    PREVIOUS_RENDER_FRAME = None
+    PREVIOUS_RENDER_FRAME_ID = None
 
     if ctx.get("gpu_compositing"):
         from osu_mania_replay_renderer.gpu_compositor import create_gpu_compositor
@@ -1120,11 +1120,12 @@ def draw_hit_lighting(
 
         target_height = max(1, int(image.shape[0] * target_width / max(1, image.shape[1])))
         center_x = lane_xs[lane] + column_widths[lane] // 2
+        hit_center_y = judge_y - int(column_widths[lane] * 0.94) // 2
         paste_additive(
             frame,
             image,
             int(center_x - target_width / 2),
-            int(judge_y - target_height / 2),
+            int(hit_center_y - target_height / 2),
             target_width,
             target_height,
         )
@@ -1899,6 +1900,7 @@ def latest_judgement(judgements, lane, kind, time):
 
 
 def frame_worker(frame_id):
+    global PREVIOUS_RENDER_FRAME, PREVIOUS_RENDER_FRAME_ID
     width = CTX["width"]
     height = CTX["height"]
     fps = CTX["fps"]
@@ -2318,9 +2320,15 @@ def frame_worker(frame_id):
             layout_point(layout_positions, "star_rating", width, height),
         )
 
+    flush_gpu(frame)
+    unblurred_frame = frame.copy() if motion_blur > 0 else None
+
+    if motion_blur > 0 and PREVIOUS_RENDER_FRAME_ID == frame_id - 1:
+        apply_temporal_motion_blur(frame, PREVIOUS_RENDER_FRAME, motion_blur)
+
     if motion_blur > 0:
-        flush_gpu(frame)
-        apply_motion_blur(frame, 0, 0, width, height, motion_blur)
+        PREVIOUS_RENDER_FRAME = unblurred_frame
+        PREVIOUS_RENDER_FRAME_ID = frame_id
 
     write_render_frame(output_dir, frame_id, frame)
 
@@ -2328,7 +2336,7 @@ def frame_worker(frame_id):
 
 
 def frame_batch_worker(frame_ids):
-    global FRAME_STREAM
+    global FRAME_STREAM, PREVIOUS_RENDER_FRAME, PREVIOUS_RENDER_FRAME_ID
 
     frame_ids = list(frame_ids)
 
@@ -2336,6 +2344,8 @@ def frame_batch_worker(frame_ids):
         return 0, 0, ""
 
     segment_path = Path(CTX["segments_dir"]) / f"segment_{frame_ids[0]:07d}.mjpg"
+    PREVIOUS_RENDER_FRAME = None
+    PREVIOUS_RENDER_FRAME_ID = None
 
     with open(segment_path, "wb", buffering=1024 * 1024) as stream:
         FRAME_STREAM = stream

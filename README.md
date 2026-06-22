@@ -1,6 +1,45 @@
+<div align="center">
+
 # osu!mania Replay Renderer
 
-A local osu!mania replay renderer written in Python. It reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then produces a synchronized MP4 video with skinned notes, long notes, receptors, judgements, statistics, audio, and a results screen.
+**Turn local `.osr` replays into synchronized, skin-accurate MP4 videos.**
+
+![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)
+![PySide6](https://img.shields.io/badge/UI-PySide6-41CD52?logo=qt&logoColor=white)
+![GPU compositing](https://img.shields.io/badge/Compositing-OpenGL%20%2F%20EGL-5586A4)
+![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux-6C7A89)
+
+[Download](../../releases/latest) · [Showcase](#showcase) · [Installation](#installation) · [Rendering Pipeline](#rendering-pipeline) · [Skin Compatibility](#skin-compatibility) · [Releases](#releases-and-remote-updates)
+
+</div>
+
+The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then produces a synchronized video with skinned notes, long notes, receptors, hit lighting, judgements, statistics, audio, and a results screen.
+
+## Showcase
+
+### Gameplay Rendering
+
+Real replay rendering with the selected mania skin, live judgements, LN states, key input, strain, PP, and change-aware motion blur.
+
+<div align="center">
+  <img src="docs/assets/gameplay-showcase.gif" alt="Rendered osu!mania replay showcase" width="720">
+</div>
+
+### Desktop Interface
+
+The desktop workflow includes automatic osu! discovery, asynchronous replay lookup, render progress with cancellation, and a persistent Full HD layout editor.
+
+<div align="center">
+  <img src="docs/assets/ui-showcase.gif" alt="Desktop interface and layout editor showcase" width="900">
+</div>
+
+## At a Glance
+
+| Skin Fidelity | Rendering Pipeline |
+| --- | --- |
+| Legacy `skin.ini`, `@2x` assets, LN parts, native fonts, hit lighting, stage and ranking elements | Parallel frame generation, OpenGL/EGL texture compositing, hardware encoding and CPU fallback |
+| Replay Accuracy | Desktop Workflow |
+| OD-dependent windows, OSR counter reconciliation, DT/NC/HT timing, star rating and PP display | Automatic osu! discovery, asynchronous beatmap lookup, ETA, cancellation and persistent Full HD layout editing |
 
 ## Features
 
@@ -15,7 +54,7 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 - Shows a compact results header with the map title, mapper, player, and active mods.
 - Draws a compact strain profile with completed sections in green and upcoming sections in grey.
 - Supports DT, NC, and HT timing. NC also applies raised audio pitch.
-- Includes optional full-frame vertical motion blur for gameplay and overlays.
+- Includes optional temporal motion blur that affects changing gameplay pixels while leaving static text and overlays sharp.
 - Draws `lightingN` and `lightingL` hit lighting from the selected mania skin with additive blending.
 - Includes selectable side statistics, strain graph, vignette strength, results background opacity, results duration, and results-screen visibility.
 - Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
@@ -47,6 +86,7 @@ A local osu!mania replay renderer written in Python. It reads an osu! beatmap, a
 | `src/osu_mania_replay_renderer/settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
 | `pyproject.toml` | Project metadata, dependencies, and `uv` configuration. |
 | `.gitignore` | Excludes virtual environments, caches, rendered videos, replays, beatmaps, debug output, and temporary render data from Git. |
+| `docs/assets/*.gif` | Animated gameplay and desktop-interface showcases embedded in this README. |
 | `README.md` | Project documentation. |
 
 ## Rendering Pipeline
@@ -160,7 +200,7 @@ Pushing a version tag such as `v0.2.0` starts the GitHub Actions release workflo
 For later versions, start from a clean working tree and run:
 
 ```bash
-python scripts/publish_release.py 0.2.1
+python scripts/publish_release.py 0.3.1
 ```
 
 This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. Because this repository is private, the in-app update checker uses `MANIA_RENDERER_GITHUB_TOKEN`, `GITHUB_TOKEN`, or an authenticated GitHub CLI session. Without authentication it explains the limitation and offers to open the Releases page in the browser instead of reporting a misleading result.

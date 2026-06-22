@@ -13,7 +13,7 @@ from osu_mania_replay_renderer import updater
 from osu_mania_replay_renderer.osu_finder import find_beatmap_by_hash, find_osu_folder
 from osu_mania_replay_renderer.renderer import (
     RenderCancelled,
-    apply_motion_blur,
+    apply_temporal_motion_blur,
     draw_difficulty_graph,
     draw_hit_lighting,
     draw_key_input_overlay,
@@ -255,16 +255,20 @@ class RendererControlTests(unittest.TestCase):
         frame = np.full((40, 40, 3), 80, dtype=np.uint8)
         judgement = {"time": 100, "display_time": 100, "value": 300, "lane": 0, "kind": "tap"}
         draw_hit_lighting(frame, skin, [judgement], [100], 150, [10], [20], 20, 1.0, [])
-        self.assertGreater(int(frame[20, 20, 1]), 80)
-        self.assertEqual(int(frame[20, 20, 0]), 80)
+        self.assertGreater(int(frame[11, 20, 1]), 80)
+        self.assertEqual(int(frame[20, 20, 1]), 80)
 
-    def test_motion_blur_covers_the_entire_frame(self):
-        frame = np.zeros((24, 24, 3), dtype=np.uint8)
-        frame[5, 1] = 255
-        frame[18, 22] = 255
-        apply_motion_blur(frame, 0, 0, 24, 24, 3)
-        self.assertTrue(np.any(frame[2:9, 1] > 0))
-        self.assertTrue(np.any(frame[15:22, 22] > 0))
+    def test_motion_blur_only_affects_changed_pixels(self):
+        previous = np.zeros((24, 24, 3), dtype=np.uint8)
+        current = np.zeros((24, 24, 3), dtype=np.uint8)
+        previous[2:6, 2:6] = 120
+        current[2:6, 2:6] = 120
+        previous[12, 8] = 255
+        current[12, 12] = 255
+        apply_temporal_motion_blur(current, previous, 4)
+        self.assertTrue(np.all(current[3, 3] == 120))
+        self.assertTrue(np.any(current[12, 8] > 0))
+        self.assertTrue(np.all(current[12, 12] < 255))
 
 if __name__ == "__main__":
     unittest.main()
