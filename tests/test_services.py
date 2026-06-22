@@ -216,7 +216,9 @@ class RendererControlTests(unittest.TestCase):
     def test_layout_preview_uses_renderer_skin_scale(self):
         self.assertEqual((SCENE_WIDTH, SCENE_HEIGHT), (1920, 1080))
         glyph = np.zeros((100, 26, 4), dtype=np.uint8)
-        glyph[:, :, 3] = 255
+        glyph[49:79, 1:24, 3] = 255
+        glyph_wide = np.zeros((100, 26, 4), dtype=np.uint8)
+        glyph_wide[49:79, 1:25, 3] = 255
         judgement = np.zeros((50, 50, 4), dtype=np.uint8)
         judgement[:, :, 3] = 255
         skin = {
@@ -226,14 +228,17 @@ class RendererControlTests(unittest.TestCase):
                 "combo_overlap": 1,
             },
             "keys": [None] * 4,
-            "combo_glyphs": {character: {2.0: glyph} for character in "128"},
+            "combo_glyphs": {"3": {2.0: glyph}, "9": {2.0: glyph_wide}},
             "hit_images": {"300": judgement},
             "hit_image_densities": {"300": 1.0},
         }
         definitions = layout_definitions(skin)
         self.assertEqual(definitions["playfield"]["size"], (646, 1080))
-        self.assertEqual(definitions["combo"]["size"], (61, 81))
-        self.assertEqual(definitions["judgement"]["size"], (70, 70))
+        self.assertEqual(definitions["combo"]["size"], (36, 24))
+        self.assertEqual(definitions["judgement"]["size"], (36, 36))
+        self.assertEqual(definitions["side_stats"]["size"], (180, 300))
+        self.assertEqual(definitions["key_input"]["size"], (174, 300))
+        self.assertEqual(definitions["strain_graph"]["size"], (500, 66))
 
     def test_hit_lighting_uses_additive_blending(self):
         lighting = np.zeros((10, 10, 4), dtype=np.uint8)

@@ -4,22 +4,22 @@ SKIN_SCALE = SCENE_HEIGHT / 480.0
 LAYOUT_POSITIONS = {
     "playfield": (0.50, 0.50),
     "combo": (0.50, 0.25),
-    "judgement": (0.50, 0.38),
-    "side_stats": (0.94, 0.22),
-    "key_input": (0.94, 0.49),
-    "timeline": (0.94, 0.64),
-    "strain_graph": (0.87, 0.95),
-    "star_rating": (0.08, 0.82),
+    "judgement": (0.50, 0.37),
+    "side_stats": (0.95, 0.16),
+    "key_input": (0.95, 0.46),
+    "timeline": (0.95, 0.64),
+    "strain_graph": (0.87, 0.97),
+    "star_rating": (0.04, 0.82),
 }
 DEFAULT_SIZES = {
     "playfield": (450, 1080),
     "combo": (102, 102),
-    "judgement": (90, 90),
-    "side_stats": (222, 312),
-    "key_input": (150, 270),
-    "timeline": (156, 54),
-    "strain_graph": (498, 99),
-    "star_rating": (150, 42),
+    "judgement": (36, 36),
+    "side_stats": (180, 300),
+    "key_input": (174, 300),
+    "timeline": (174, 60),
+    "strain_graph": (500, 66),
+    "star_rating": (120, 36),
 }
 
 
@@ -56,6 +56,36 @@ def logical_glyph_metrics(glyphs, text, scale, overlap):
     return metrics, max(1, width), max(1, height), overlap_px
 
 
+def visible_glyph_metrics(glyphs, text, scale, overlap):
+    metrics = []
+
+    for character in text:
+        variants = glyphs.get(character, {})
+
+        if not variants:
+            return None
+
+        density = max(variants)
+        image = variants[density]
+
+        if image.ndim == 3 and image.shape[2] == 4:
+            ys, xs = (image[:, :, 3] > 8).nonzero()
+
+            if len(xs):
+                image = image[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
+
+        metrics.append((
+            image,
+            max(1, int(image.shape[1] * scale / density)),
+            max(1, int(image.shape[0] * scale / density)),
+        ))
+
+    overlap_px = int(overlap * scale)
+    width = sum(item[1] for item in metrics) - overlap_px * max(0, len(metrics) - 1)
+    height = max(item[2] for item in metrics)
+    return metrics, max(1, width), max(1, height), overlap_px
+
+
 def layout_definitions(skin):
     cfg = skin.get("cfg", {})
     keys = max(1, len(skin.get("keys", [])))
@@ -65,30 +95,17 @@ def layout_definitions(skin):
     scaled_spacing = [int(spacing * SKIN_SCALE) for spacing in column_spacing]
     playfield_width = max(1, sum(scaled_widths) + sum(scaled_spacing))
 
-    combo_metrics = logical_glyph_metrics(
+    combo_metrics = visible_glyph_metrics(
         skin.get("combo_glyphs", {}),
-        "128",
+        "39",
         SKIN_SCALE * 0.72,
         cfg.get("combo_overlap", 0),
     )
     combo_size = (combo_metrics[1], combo_metrics[2]) if combo_metrics else DEFAULT_SIZES["combo"]
 
-    judgement = skin.get("hit_images", {}).get("300")
-    judgement_density = max(1.0, float(skin.get("hit_image_densities", {}).get("300", 1.0)))
-
-    if meaningful_image(judgement):
-        judgement_scale = SCENE_HEIGHT / 768.0 / judgement_density
-        judgement_size = (
-            max(1, int(judgement.shape[1] * judgement_scale)),
-            max(1, int(judgement.shape[0] * judgement_scale)),
-        )
-    else:
-        judgement_size = DEFAULT_SIZES["judgement"]
-
     sizes = dict(DEFAULT_SIZES)
     sizes["playfield"] = (playfield_width, SCENE_HEIGHT)
     sizes["combo"] = combo_size
-    sizes["judgement"] = judgement_size
     return {
         key: {"position": LAYOUT_POSITIONS[key], "size": sizes[key]}
         for key in LAYOUT_POSITIONS

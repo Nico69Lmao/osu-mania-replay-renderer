@@ -19,8 +19,8 @@ from osu_mania_replay_renderer.layout_model import (
     SCENE_WIDTH,
     SKIN_SCALE,
     layout_definitions,
-    logical_glyph_metrics,
     meaningful_image,
+    visible_glyph_metrics,
 )
 
 
@@ -44,6 +44,9 @@ def visible_crop(image):
 def skin_pixmap(image):
     if image is None:
         return None
+
+    if not image.flags.c_contiguous:
+        image = image.copy()
 
     height, width = image.shape[:2]
 
@@ -85,9 +88,9 @@ def draw_exact(painter, image, x, y, width, height):
 
 def draw_combo_preview(painter, skin, width, height):
     cfg = skin.get("cfg", {})
-    metrics = logical_glyph_metrics(
+    metrics = visible_glyph_metrics(
         skin.get("combo_glyphs", {}),
-        "128",
+        "39",
         SKIN_SCALE * 0.72,
         cfg.get("combo_overlap", 0),
     )
@@ -132,7 +135,8 @@ def preview_pixmap(key, definition, skin):
         source_spacing = cfg.get("column_spacing") or [0] * (keys - 1)
         lane_widths = [int(value * SKIN_SCALE) for value in source_widths]
         lane_spacing = [int(value * SKIN_SCALE) for value in source_spacing]
-        judge_y = int((cfg.get("hit_position") or 402) * SKIN_SCALE)
+        reference_note_centres = {0: 320, 2: 790, 3: 320}
+        receptor_center_y = int(SCENE_HEIGHT * 0.915)
         lane_x = 0
 
         for lane in range(keys):
@@ -145,9 +149,11 @@ def preview_pixmap(key, definition, skin):
             receptor = visible_crop(skin.get("keys", [None] * keys)[lane])
             note_width = max(1, int(lane_width * 0.94))
             note_height = max(1, int(note.shape[0] * note_width / note.shape[1])) if note is not None else note_width
-            note_y = (40 + lane * 35) * DISPLAY_UNIT
-            draw_exact(painter, note, x + (lane_width - note_width) / 2, note_y, note_width, note_height)
-            receptor_center_y = judge_y - note_width // 2
+
+            if lane in reference_note_centres:
+                note_y = reference_note_centres[lane] - note_height / 2
+                draw_exact(painter, note, x + (lane_width - note_width) / 2, note_y, note_width, note_height)
+
             draw_exact(
                 painter,
                 receptor,
@@ -179,63 +185,104 @@ def preview_pixmap(key, definition, skin):
         painter.drawLine(width - 1, 0, width - 1, height)
     elif key == "combo":
         if not draw_combo_preview(painter, skin, width, height):
-            painter.drawText(pixmap.rect(), Qt.AlignCenter, "123")
+            painter.drawText(pixmap.rect(), Qt.AlignCenter, "39")
     elif key == "judgement":
         image = skin.get("hit_images", {}).get("300g")
+        image = visible_crop(image)
 
-        if image is None or (image.ndim == 3 and image.shape[2] == 4 and (image[:, :, 3] > 8).sum() < 64):
-            image = skin.get("hit_images", {}).get("300")
-
-        if not draw_fitted(painter, image, QRectF(pixmap.rect()), 0):
-            painter.drawText(pixmap.rect(), Qt.AlignCenter, "300")
+        if meaningful_image(image):
+            density = max(1.0, float(skin.get("hit_image_densities", {}).get("300g", 1.0)))
+            scale = SCENE_HEIGHT / 768.0 / density
+            dot_width = max(1, int(image.shape[1] * scale))
+            dot_height = max(1, int(image.shape[0] * scale))
+            draw_exact(
+                painter,
+                image,
+                (width - dot_width) / 2,
+                (height - dot_height) / 2,
+                dot_width,
+                dot_height,
+            )
+        else:
+            painter.setBrush(QColor("#ffffff"))
+            painter.drawEllipse(QRectF(width / 2 - 3, height / 2 - 3, 6, 6))
     elif key == "side_stats":
-        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 242))
         large_font = QFont("Sans Serif", 8)
         large_font.setWeight(QFont.DemiBold)
         painter.setFont(large_font)
-        painter.drawText(QRectF(3, 1, width - 6, 17), Qt.AlignRight, "128x")
+        painter.drawText(QRectF(3, 1, width - 6, 17), Qt.AlignRight, "39x")
         painter.setFont(QFont("Sans Serif", 6))
-        painter.drawText(QRectF(3, 18, width - 6, 14), Qt.AlignRight, "99.82%")
+        painter.drawText(QRectF(3, 18, width - 6, 14), Qt.AlignRight, "100.00%")
         painter.setFont(QFont("Sans Serif", 5))
-        painter.drawText(
-            QRectF(3, 34, width - 6, height - 36),
-            Qt.AlignRight,
-            "300g  82\n300   46\n200    3\n100    1\n50     0\nMiss   0",
-        )
+        rows = [
+            ("300g: 27", "#e8d66b"), ("300: 5", "#ececec"),
+            ("200: 0", "#66c878"), ("100: 0", "#67b7d8"),
+            ("50: 0", "#647cba"), ("Miss: 0", "#7655b8"),
+        ]
+
+        for index, (text, colour) in enumerate(rows):
+            painter.setPen(QColor(colour))
+            painter.drawText(QRectF(3, 35 + index * 9, width - 6, 9), Qt.AlignRight, text)
+
+        painter.setPen(QColor("#eeeeee"))
+        painter.setFont(QFont("Sans Serif", 6))
+        painter.drawText(QRectF(3, 90, width - 6, 10), Qt.AlignRight, "pp: 42.67")
     elif key == "key_input":
-        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 238))
+        painter.setPen(QColor("#e8e8e8"))
+        painter.setFont(QFont("Sans Serif", 5))
+        painter.drawText(QRectF(0, 0, width, 10), Qt.AlignRight, "INPUT / BPM")
+        painter.fillRect(QRectF(0, 12, width, height - 12), QColor(0, 0, 0, 238))
         lane_width = 7
-        gap = 4
+        gap = 6
         start_x = int((width - (lane_width * 4 + gap * 3)) / 2)
 
         for lane in range(4):
             x = start_x + lane * (lane_width + gap)
-            for row in range(8):
-                if (row + lane) % 3 != 1:
-                    painter.fillRect(x, 5 + row * 8, lane_width, 4, QColor(205, 211, 185))
-            painter.setPen(QPen(QColor(211, 171, 63), 1))
-            painter.drawRect(x, height - 13, lane_width, 8)
+            bar_rows = ([18, 43, 69] if lane == 0 else [18, 67] if lane == 1 else [30, 69] if lane == 2 else [42, 69])
+
+            for row in bar_rows:
+                painter.fillRect(x, row, lane_width, 1, QColor(225, 225, 225))
+
+            if lane in (1, 2, 3):
+                painter.fillRect(x, 48 + lane * 5, lane_width, 7, QColor(105, 105, 105))
+
+            painter.setPen(QPen(QColor(95, 145, 170), 0.8))
+            painter.drawRect(x, 77, lane_width, 8)
+            painter.setPen(QColor("#e8e8e8"))
+            painter.drawText(QRectF(x, 77, lane_width, 8), Qt.AlignCenter, str(lane + 1))
+
+        painter.setFont(QFont("Sans Serif", 4))
+        for lane, bpm in enumerate(("101", "102", "086", "090")):
+            x = start_x + lane * (lane_width + gap)
+            painter.drawText(QRectF(x - 2, 88, lane_width + 4, 8), Qt.AlignCenter, bpm)
     elif key == "timeline":
         painter.setPen(QPen(QColor(220, 223, 226), 1.5))
-        painter.drawEllipse(2, 2, 14, 14)
+        painter.drawEllipse(width - 18, 2, 16, 16)
         painter.setPen(QPen(QColor(145, 148, 152), 2.5))
-        painter.drawArc(4, 4, 10, 10, 90 * 16, -210 * 16)
+        painter.drawArc(width - 16, 4, 12, 12, 90 * 16, -300 * 16)
         painter.setPen(QPen(QColor("#eef2f4"), 1))
         painter.setFont(QFont("Sans Serif", 5))
-        painter.drawText(QRectF(19, 0, width - 20, height), Qt.AlignVCenter | Qt.AlignLeft, "1:42")
+        painter.drawText(QRectF(0, 0, width - 21, height), Qt.AlignVCenter | Qt.AlignRight, "0:05 / 0:30")
     elif key == "strain_graph":
-        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 238))
-        points = QPolygonF([
-            QPointF(2, height - 4), QPointF(width * 0.18, height * 0.35), QPointF(width * 0.34, height * 0.72),
-            QPointF(width * 0.49, height * 0.16), QPointF(width * 0.66, height * 0.58),
-            QPointF(width * 0.82, height * 0.28), QPointF(width - 2, height - 5),
-        ])
-        painter.setPen(QPen(QColor(75, 224, 104), 2))
-        painter.drawPolyline(points)
+        point_list = [
+            QPointF(1, height - 2), QPointF(width * 0.03, height * 0.52), QPointF(width * 0.05, height - 2),
+            QPointF(width * 0.17, height - 2), QPointF(width * 0.19, height * 0.15),
+            QPointF(width * 0.21, height - 2), QPointF(width * 0.34, height - 2),
+            QPointF(width * 0.36, height * 0.30), QPointF(width * 0.38, height - 2),
+            QPointF(width * 0.51, height * 0.18), QPointF(width * 0.54, height - 2),
+            QPointF(width * 0.65, height * 0.12), QPointF(width * 0.68, height * 0.40),
+            QPointF(width * 0.72, height - 2), QPointF(width * 0.82, height * 0.20),
+            QPointF(width * 0.85, height - 2), QPointF(width * 0.96, height * 0.10),
+            QPointF(width - 1, height * 0.62),
+        ]
+        split = 6
+        painter.setPen(QPen(QColor(63, 221, 85), 1.5))
+        painter.drawPolyline(QPolygonF(point_list[:split]))
+        painter.setPen(QPen(QColor(145, 145, 145), 1.5))
+        painter.drawPolyline(QPolygonF(point_list[split - 1:]))
     else:
-        painter.fillRect(QRectF(0, 0, width, height), QColor(0, 0, 0, 210))
         painter.setFont(QFont("Sans Serif", 6))
-        painter.drawText(QRectF(0, 0, width, height), Qt.AlignCenter, "SR 5.82*")
+        painter.drawText(QRectF(0, 0, width, height), Qt.AlignCenter, "SR: 2.34*")
 
     painter.end()
     return pixmap
