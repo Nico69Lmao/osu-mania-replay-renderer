@@ -17,20 +17,35 @@ The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then 
 
 ## Showcase
 
+<table>
+  <tr>
+    <td><strong>Full HD gameplay render</strong></td>
+    <td><strong>Desktop workflow and layout editor</strong></td>
+  </tr>
+  <tr>
+    <td>Skin-accurate mania gameplay at 1080p with live judgements, LN states, key input, strain, PP, and change-aware motion blur.</td>
+    <td>Automatic osu! discovery, asynchronous replay lookup, render progress with cancellation, and persistent Full HD layout editing.</td>
+  </tr>
+</table>
+
 ### Gameplay Rendering
 
-Real replay rendering with the selected mania skin, live judgements, LN states, key input, strain, PP, and change-aware motion blur.
-
 <div align="center">
-  <img src="docs/assets/gameplay-showcase.gif" alt="Rendered osu!mania replay showcase" width="720">
+  <a href="docs/assets/gameplay-showcase-1080p.gif">
+    <img src="docs/assets/gameplay-showcase-1080p.gif" alt="Full HD rendered osu!mania replay showcase" width="100%">
+  </a>
+  <br>
+  <sub>Click the animation to open the original 1920×1080 GIF.</sub>
 </div>
 
 ### Desktop Interface
 
-The desktop workflow includes automatic osu! discovery, asynchronous replay lookup, render progress with cancellation, and a persistent Full HD layout editor.
-
 <div align="center">
-  <img src="docs/assets/ui-showcase.gif" alt="Desktop interface and layout editor showcase" width="900">
+  <a href="docs/assets/ui-showcase-1080p.gif">
+    <img src="docs/assets/ui-showcase-1080p.gif" alt="Full HD desktop interface and layout editor showcase" width="100%">
+  </a>
+  <br>
+  <sub>Click the animation to open the original 1920×1080 GIF.</sub>
 </div>
 
 ## At a Glance
@@ -86,7 +101,7 @@ The desktop workflow includes automatic osu! discovery, asynchronous replay look
 | `src/osu_mania_replay_renderer/settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
 | `pyproject.toml` | Project metadata, dependencies, and `uv` configuration. |
 | `.gitignore` | Excludes virtual environments, caches, rendered videos, replays, beatmaps, debug output, and temporary render data from Git. |
-| `docs/assets/*.gif` | Animated gameplay and desktop-interface showcases embedded in this README. |
+| `docs/assets/*-1080p.gif` | Full HD animated gameplay and desktop-interface showcases embedded in this README. |
 | `README.md` | Project documentation. |
 
 ## Rendering Pipeline
