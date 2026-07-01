@@ -128,4 +128,4 @@ The app checks GitHub Releases on startup. If a newer compatible build exists, i
 
 ## Support the project
 
-If this renderer helps you make better osu!mania videos, you can support development with a small donation on [PayPal](https://paypal.me/Nico69Lmao). Every bit helps with testing, packaging, and improving skin compatibility.
+If this renderer helps you make better osu!mania videos, you can support development with a small donation on [Ko-fi](https://ko-fi.com/nico69yaza). Every bit helps with testing, packaging, and living... you know.
