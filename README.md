@@ -9,44 +9,11 @@
 ![GPU compositing](https://img.shields.io/badge/Compositing-OpenGL%20%2F%20EGL-5586A4)
 ![Platforms](https://img.shields.io/badge/Platforms-Windows%20%7C%20Linux-6C7A89)
 
-[Download](../../releases/latest) · [Showcase](#showcase) · [Installation](#installation) · [Rendering Pipeline](#rendering-pipeline) · [Skin Compatibility](#skin-compatibility) · [Releases](#releases-and-remote-updates)
+[Download](../../releases/latest) · [Features](#features) · [Installation](#installation) · [Rendering Pipeline](#rendering-pipeline) · [Skin Compatibility](#skin-compatibility) · [Releases](#releases-and-remote-updates)
 
 </div>
 
 The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then produces a synchronized video with skinned notes, long notes, receptors, hit lighting, judgements, statistics, audio, and a results screen.
-
-## Showcase
-
-<table>
-  <tr>
-    <td><strong>Full HD gameplay render</strong></td>
-    <td><strong>Desktop workflow and layout editor</strong></td>
-  </tr>
-  <tr>
-    <td>Skin-accurate mania gameplay at 1080p with live judgements, LN states, key input, strain, PP, and change-aware motion blur.</td>
-    <td>Automatic osu! discovery, asynchronous replay lookup, render progress with cancellation, and persistent Full HD layout editing.</td>
-  </tr>
-</table>
-
-### Gameplay Rendering
-
-<div align="center">
-  <a href="docs/assets/gameplay-showcase-1080p.gif">
-    <img src="docs/assets/gameplay-showcase-1080p.gif" alt="Full HD rendered osu!mania replay showcase" width="100%">
-  </a>
-  <br>
-  <sub>Click the animation to open the original 1920×1080 GIF.</sub>
-</div>
-
-### Desktop Interface
-
-<div align="center">
-  <a href="docs/assets/ui-showcase-1080p.gif">
-    <img src="docs/assets/ui-showcase-1080p.gif" alt="Full HD desktop interface and layout editor showcase" width="100%">
-  </a>
-  <br>
-  <sub>Click the animation to open the original 1920×1080 GIF.</sub>
-</div>
 
 ## At a Glance
 
@@ -101,7 +68,6 @@ The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then 
 | `src/osu_mania_replay_renderer/settings.py` | Stores and loads persistent GUI preferences from `~/.config/mania-renderer/settings.json`. |
 | `pyproject.toml` | Project metadata, dependencies, and `uv` configuration. |
 | `.gitignore` | Excludes virtual environments, caches, rendered videos, replays, beatmaps, debug output, and temporary render data from Git. |
-| `docs/assets/*-1080p.gif` | Full HD animated gameplay and desktop-interface showcases embedded in this README. |
 | `README.md` | Project documentation. |
 
 ## Rendering Pipeline
