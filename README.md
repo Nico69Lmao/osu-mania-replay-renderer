@@ -75,7 +75,7 @@ Some osu! UI-only elements are intentionally not drawn yet, such as replay navig
 
 Judgements use osu!mania OD-based hit windows and replay timestamps. The final judgement counters are reconciled with the values stored inside the `.osr`, which keeps the rendered result aligned with the actual replay.
 
-Displayed pp is estimated from local osu! star rating data when the matching value exists in `osu!.db`. If the renderer cannot find a matching star rating, it shows `pp: N/A` instead of inventing a number.
+Displayed pp is estimated from local osu! star rating data when the matching value exists in `osu!.db`. If the renderer cannot find a matching star rating, it shows `pp: N/A`.
 
 ## Development
 
