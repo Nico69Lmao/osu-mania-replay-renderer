@@ -5,7 +5,7 @@ import shutil
 import subprocess
 import threading
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QThread, Signal, Qt, QUrl
+from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QThread, QTimer, Signal, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -199,6 +199,8 @@ class MainWindow(QMainWindow):
 
         if self.replay_file:
             self._start_beatmap_lookup()
+
+        QTimer.singleShot(1200, self.check_updates_on_startup)
 
     def _build_ui(self):
         root = QWidget()
@@ -998,23 +1000,33 @@ class MainWindow(QMainWindow):
         self.progress.setValue(0)
         self.progress_label.setText("Render cancelled")
 
-    def check_updates(self):
+    def check_updates_on_startup(self):
+        self.check_updates(automatic=True)
+
+    def check_updates(self, automatic=False):
         if self.update_thread and self.update_thread.isRunning():
             return
 
-        self.update_button.setEnabled(False)
-        self.update_button.setText("Checking...")
+        if not automatic:
+            self.update_button.setEnabled(False)
+            self.update_button.setText("Checking...")
+
         self.update_thread = UpdateCheckThread(self)
-        self.update_thread.completed.connect(self.update_check_done)
-        self.update_thread.failed.connect(self.update_check_failed)
+        self.update_thread.completed.connect(
+            lambda update: self.update_check_done(update, automatic=automatic)
+        )
+        self.update_thread.failed.connect(
+            lambda error: self.update_check_failed(error, automatic=automatic)
+        )
         self.update_thread.start()
 
-    def update_check_done(self, update):
+    def update_check_done(self, update, automatic=False):
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
 
         if update is None:
-            QMessageBox.information(self, "Updates", "You already have the latest version.")
+            if not automatic:
+                QMessageBox.information(self, "Updates", "You already have the latest version.")
             return
 
         answer = QMessageBox.question(
@@ -1028,9 +1040,13 @@ class MainWindow(QMainWindow):
         if answer == QMessageBox.Yes:
             QDesktopServices.openUrl(QUrl(update.release_url))
 
-    def update_check_failed(self, error):
+    def update_check_failed(self, error, automatic=False):
         self.update_button.setEnabled(True)
         self.update_button.setText("Check for updates")
+
+        if automatic:
+            return
+
         answer = QMessageBox.question(
             self,
             "Update check unavailable",

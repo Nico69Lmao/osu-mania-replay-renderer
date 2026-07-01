@@ -100,8 +100,7 @@ def check_for_update(timeout=8):
     except HTTPError as error:
         if error.code == 404 and not token:
             raise UpdateCheckError(
-                "This repository is private and GitHub returned 404 without authentication. "
-                "Sign in with GitHub CLI or set MANIA_RENDERER_GITHUB_TOKEN."
+                "GitHub could not find the release feed. The repository may be unavailable or private."
             ) from error
 
         if error.code in (403, 429):

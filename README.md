@@ -15,6 +15,8 @@
 
 The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then produces a synchronized video with skinned notes, long notes, receptors, hit lighting, judgements, statistics, audio, and a results screen.
 
+> Public alpha: the renderer is usable, but the UI, defaults, skin compatibility, and release packages may still change quickly.
+
 ## At a Glance
 
 | Skin Fidelity | Rendering Pipeline |
@@ -42,7 +44,7 @@ The renderer reads an osu! beatmap, an OSR replay, and a legacy osu! skin, then 
 - Produces a legacy-style results screen using the beatmap background and the selected skin's ranking and hit-result assets.
 - Tries VAAPI, Intel QSV, and AMD AMF hardware encoding before falling back to `libx264`.
 - Generates frames in parallel into batched MJPEG streams, avoiding thousands of temporary files and reducing disk overhead.
-- Ships as a Windows `.exe` and Linux AppImage, with a built-in release update check.
+- Ships as a Windows `.exe` and Linux AppImage, with an automatic startup update check and a manual release check button.
 - Detects common stable osu! installations automatically on Windows, Linux, osu-wine, Wine, and Lutris.
 - Reads replay metadata and searches beatmaps in background threads with progress, cancellation, and ETA.
 - Supports cancelling frame generation mid-render and removes partial frame streams and output files.
@@ -184,7 +186,7 @@ For later versions, start from a clean working tree and run:
 python scripts/publish_release.py 0.3.1
 ```
 
-This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. Because this repository is private, the in-app update checker uses `MANIA_RENDERER_GITHUB_TOKEN`, `GITHUB_TOKEN`, or an authenticated GitHub CLI session. Without authentication it explains the limitation and offers to open the Releases page in the browser instead of reporting a misleading result.
+This updates the package version, refreshes `uv.lock`, commits, creates the tag, and pushes it. On startup, the desktop app checks GitHub Releases in the background. If a newer compatible `.exe` or AppImage is available, it asks the user whether they want to open the release page and download it.
 
 ## Debug Report
 
