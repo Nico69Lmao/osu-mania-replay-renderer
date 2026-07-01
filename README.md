@@ -125,3 +125,7 @@ The app checks GitHub Releases on startup. If a newer compatible build exists, i
 - [osu!mania performance calculator](https://github.com/ppy/osu/blob/master/osu.Game.Rulesets.Mania/Difficulty/ManiaPerformanceCalculator.cs)
 - [osu!mania grade requirements](https://osu.ppy.sh/wiki/en/Gameplay/Grade#osu!mania)
 - [Ranking screen skin elements](https://osu.ppy.sh/wiki/en/Skinning/Interface#ranking-screen)
+
+## Support the project
+
+If this renderer helps you make better osu!mania videos, you can support development with a small donation on [PayPal](https://paypal.me/Nico69Lmao). Every bit helps with testing, packaging, and improving skin compatibility.
