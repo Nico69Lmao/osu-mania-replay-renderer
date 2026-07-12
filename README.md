@@ -133,14 +133,6 @@ GitHub Actions builds:
 - Windows `.exe`
 - Linux AppImage
 
-Release `v0.5.0` is scheduled by workflow for July 12, 2026 at 13:00 UTC.
-
-Manual publish from a clean tree:
-
-```bash
-python scripts/publish_release.py 0.5.0
-```
-
 ## Support
 
 If this renderer helps you make osu!mania videos, you can support development on [Ko-fi](https://ko-fi.com/nico69yaza).
