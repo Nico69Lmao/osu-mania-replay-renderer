@@ -1,5 +1,6 @@
 from pathlib import Path
 from hashlib import md5
+import json
 import os
 import platform
 import re
@@ -8,12 +9,97 @@ import time
 
 from osrparse import Replay
 
+from osu_mania_replay_renderer.osu_db_reader import beatmap_path_by_hash
+from osu_mania_replay_renderer.settings import APP_DIR
+
 DT = 64
 HT = 256
 NC = 512
+SV2 = 536870912
 MR = 1073741824
 _HASH_CACHE = {}
 _HASH_CACHE_LOCK = threading.Lock()
+_BEATMAP_LOOKUP_FILE = APP_DIR / "beatmap_hash_cache.json"
+_BEATMAP_LOOKUP_CACHE = None
+_BEATMAP_LOOKUP_LOCK = threading.Lock()
+_REPLAY_LIST_CACHE = {}
+_REPLAY_LIST_LOCK = threading.Lock()
+
+
+def _cache_osu_folder_key(osu_folder):
+    try:
+        return str(Path(osu_folder).expanduser().resolve())
+    except Exception:
+        return str(osu_folder)
+
+
+def _load_beatmap_lookup_cache():
+    global _BEATMAP_LOOKUP_CACHE
+    with _BEATMAP_LOOKUP_LOCK:
+        if _BEATMAP_LOOKUP_CACHE is not None:
+            return _BEATMAP_LOOKUP_CACHE
+
+        try:
+            with open(_BEATMAP_LOOKUP_FILE, "r", encoding="utf-8") as stream:
+                data = json.load(stream)
+        except Exception:
+            data = {}
+
+        if not isinstance(data, dict):
+            data = {}
+
+        _BEATMAP_LOOKUP_CACHE = data
+        return _BEATMAP_LOOKUP_CACHE
+
+
+def _save_beatmap_lookup_cache(cache):
+    APP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_file = _BEATMAP_LOOKUP_FILE.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as stream:
+        json.dump(cache, stream, ensure_ascii=False, indent=2)
+    tmp_file.replace(_BEATMAP_LOOKUP_FILE)
+
+
+def _cached_beatmap_path(osu_folder, target_hash):
+    cache = _load_beatmap_lookup_cache()
+    folder_cache = cache.get(_cache_osu_folder_key(osu_folder), {})
+
+    if not isinstance(folder_cache, dict):
+        return None
+
+    cached = folder_cache.get(str(target_hash).lower())
+
+    if not cached:
+        return None
+
+    path = Path(cached)
+
+    if not path.is_file():
+        return None
+
+    try:
+        if _cached_file_md5(path) == str(target_hash).lower():
+            return str(path)
+    except OSError:
+        return None
+
+    return None
+
+
+def _remember_beatmap_path(osu_folder, target_hash, osu_file):
+    if not osu_file:
+        return
+
+    cache = _load_beatmap_lookup_cache()
+    folder_key = _cache_osu_folder_key(osu_folder)
+
+    with _BEATMAP_LOOKUP_LOCK:
+        folder_cache = cache.setdefault(folder_key, {})
+        folder_cache[str(target_hash).lower()] = str(osu_file)
+        try:
+            _save_beatmap_lookup_cache(cache)
+        except OSError:
+            pass
 
 
 def osu_folder_score(path):
@@ -140,6 +226,60 @@ def list_skins(osu_folder: str):
     return sorted([p.name for p in skins_dir.iterdir() if p.is_dir()])
 
 
+def list_recent_replays(osu_folder: str, limit=200, query=""):
+    replays_dir = Path(osu_folder) / "Replays"
+
+    if not replays_dir.is_dir():
+        return []
+
+    needle = str(query or "").strip().lower()
+    try:
+        signature = (str(replays_dir.resolve()), replays_dir.stat().st_mtime_ns)
+    except OSError:
+        return []
+
+    with _REPLAY_LIST_LOCK:
+        cached = _REPLAY_LIST_CACHE.get(signature)
+
+    if cached is None:
+        entries = []
+
+        try:
+            with os.scandir(replays_dir) as iterator:
+                for entry in iterator:
+                    if not entry.is_file() or not entry.name.lower().endswith(".osr"):
+                        continue
+
+                    try:
+                        stat = entry.stat()
+                    except OSError:
+                        continue
+
+                    entries.append((stat.st_mtime_ns, entry.name, entry.path, entry.name.lower()))
+        except OSError:
+            return []
+
+        entries.sort(reverse=True)
+
+        with _REPLAY_LIST_LOCK:
+            _REPLAY_LIST_CACHE.clear()
+            _REPLAY_LIST_CACHE[signature] = entries
+    else:
+        entries = cached
+
+    if needle:
+        entries = [entry for entry in entries if needle in entry[3]]
+
+    return [
+        {
+            "name": name,
+            "path": path,
+            "mtime_ns": mtime_ns,
+        }
+        for mtime_ns, name, path, _ in entries[:max(1, int(limit))]
+    ]
+
+
 def get_replay(replay_path: str):
     return Replay.from_path(replay_path)
 
@@ -173,9 +313,12 @@ def mod_settings_from_replay(replay):
         speed_multiplier = 0.75
 
     mirror = bool(mods & MR)
+    score_v2 = bool(mods & SV2)
 
     if mirror:
         names.append("MR")
+    if score_v2:
+        names.append("V2")
 
     if not names:
         names.append("NM")
@@ -185,6 +328,7 @@ def mod_settings_from_replay(replay):
         "mods": " ".join(names),
         "speed_multiplier": speed_multiplier,
         "mirror": mirror,
+        "score_v2": score_v2,
         "nightcore_pitch": nightcore_pitch,
     }
 
@@ -276,6 +420,13 @@ def find_beatmap_by_hash(
         return None
 
     preferred = Path(preferred_path) if preferred_path else None
+    cached = _cached_beatmap_path(osu_folder, target_hash)
+
+    if cached:
+        if progress_callback:
+            progress_callback(1, 1, 0.0)
+
+        return cached
 
     if preferred and preferred.is_file():
         try:
@@ -283,9 +434,25 @@ def find_beatmap_by_hash(
                 if progress_callback:
                     progress_callback(1, 1, 0.0)
 
+                _remember_beatmap_path(osu_folder, target_hash, preferred)
                 return str(preferred)
         except OSError:
             pass
+
+    if progress_callback:
+        progress_callback(0, 100, None)
+
+    try:
+        found = beatmap_path_by_hash(osu_folder, target_hash)
+
+        if found:
+            if progress_callback:
+                progress_callback(100, 100, 0.0)
+
+            _remember_beatmap_path(osu_folder, target_hash, found)
+            return found
+    except Exception:
+        pass
 
     if progress_callback:
         progress_callback(0, 0, None)
@@ -308,6 +475,7 @@ def find_beatmap_by_hash(
                 if progress_callback:
                     progress_callback(checked, total, 0.0)
 
+                _remember_beatmap_path(osu_folder, target_hash, osu_file)
                 return str(osu_file)
         except Exception:
             pass

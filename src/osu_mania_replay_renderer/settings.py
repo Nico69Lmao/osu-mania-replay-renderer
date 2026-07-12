@@ -23,6 +23,8 @@ DEFAULT_SETTINGS = {
     "last_beatmap": "",
     "last_output_folder": "",
     "last_skin": "",
+    "default_skin_4k": "★ Nico69_ v4 — Verified [4k]",
+    "default_skin_7k": "★ Cawolo skin new Max — Verified [7k]",
     "scroll_speed": "30.0",
     "motion_blur": "0",
     "resolution": "1280x720",
@@ -35,6 +37,7 @@ DEFAULT_SETTINGS = {
     "colour_combo_during_holds": True,
     "gpu_compositing": True,
     "layout_positions": {},
+    "hide_support_popup": False,
 }
 
 

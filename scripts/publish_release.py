@@ -17,10 +17,11 @@ def run(*args):
 
 
 def main():
-    if len(sys.argv) != 2 or not re.fullmatch(r"\d+\.\d+\.\d+", sys.argv[1]):
-        raise SystemExit("Usage: python scripts/publish_release.py X.Y.Z")
+    if len(sys.argv) != 2 or not re.fullmatch(r"\d+\.\d+\.\d+v?", sys.argv[1]):
+        raise SystemExit("Usage: python scripts/publish_release.py X.Y.Z or X.Y.Zv")
 
     version = sys.argv[1]
+    package_version = version.removesuffix("v")
     status = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=ROOT,
@@ -35,7 +36,7 @@ def main():
     pyproject = PYPROJECT.read_text(encoding="utf-8")
     pyproject = re.sub(
         r'(?m)^(version\s*=\s*)"[^"]+"',
-        rf'\g<1>"{version}"',
+        rf'\g<1>"{package_version}"',
         pyproject,
         count=1,
     )

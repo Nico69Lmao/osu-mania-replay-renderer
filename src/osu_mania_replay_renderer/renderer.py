@@ -12,19 +12,42 @@ import time
 import json
 
 from osu_mania_replay_renderer.beatmap_parser import parse_osu
-from osu_mania_replay_renderer.osu_finder import get_mod_settings, get_stable_mania_accuracy, get_replay
+from osu_mania_replay_renderer.osu_finder import get_mod_settings, get_stable_mania_accuracy, get_replay, mod_settings_from_replay
 from osu_mania_replay_renderer.skin_loader import load_mania_skin
 from osu_mania_replay_renderer.replay_parser import get_replay_events
 from osu_mania_replay_renderer.osu_db_reader import read_mania_star_rating
+from osu_mania_replay_renderer.renderer_media import (
+    encode_silent_video,
+    ffmpeg_binary,
+    ffmpeg_encoder_names,
+    format_duration,
+    frame_input_args,
+    make_audio_args,
+    vaapi_device,
+    video_encode_commands,
+)
+from osu_mania_replay_renderer.scoring import (
+    build_event_lanes,
+    build_judgements,
+    find_best_offset,
+    add_stable_ln_ticks,
+    hit_image_key,
+    judgement_counts,
+    mania_accuracy_from_counts,
+    mania_hit_windows,
+    reconcile_judgements_with_replay,
+    replay_judgement_counts,
+    stable_mania_accuracy_from_replay,
+)
 
 CTX = {}
 RESIZE_CACHE = {}
 ALPHA_BBOX_CACHE = {}
 GPU_COMPOSITOR = None
+GPU_COMPOSITING_ACTIVE = True
 FRAME_STREAM = None
 PREVIOUS_RENDER_FRAME = None
 PREVIOUS_RENDER_FRAME_ID = None
-FFMPEG_BINARY = None
 MANIA_MAX_TIME_RANGE_MS = 11485.0
 MANIA_MIN_TIME_RANGE_MS = 290.0
 
@@ -172,7 +195,7 @@ def paste_rgba(frame, img, x, y, w=None, h=None):
     if img is None:
         return
 
-    if GPU_COMPOSITOR is not None:
+    if GPU_COMPOSITOR is not None and GPU_COMPOSITING_ACTIVE:
         target_width = w if w is not None else img.shape[1]
         target_height = h if h is not None else img.shape[0]
         GPU_COMPOSITOR.queue(img, x, y, target_width, target_height)
@@ -216,7 +239,7 @@ def paste_additive(frame, img, x, y, w=None, h=None):
     target_width = w if w is not None else img.shape[1]
     target_height = h if h is not None else img.shape[0]
 
-    if GPU_COMPOSITOR is not None:
+    if GPU_COMPOSITOR is not None and GPU_COMPOSITING_ACTIVE:
         GPU_COMPOSITOR.queue(img, x, y, target_width, target_height, "additive")
         return
 
@@ -359,6 +382,11 @@ def paste_rgba_centered_sized(frame, img, cx, cy, width, height, crop_alpha=Fals
 def flush_gpu(frame):
     if GPU_COMPOSITOR is not None:
         GPU_COMPOSITOR.flush(frame)
+
+
+def set_gpu_compositing_active(active):
+    global GPU_COMPOSITING_ACTIVE
+    GPU_COMPOSITING_ACTIVE = bool(active)
 
 
 def select_skin_glyph(variants, height):
@@ -576,403 +604,16 @@ def apply_vignette(frame, mask):
     frame[:] = (frame.astype(np.uint16) * mask[:, :, None].astype(np.uint16) // 255).astype(np.uint8)
 
 
-def mania_hit_windows(overall_difficulty, is_convert=False):
-    if is_convert:
-        return {
-            "perfect": 16,
-            "great": 34 if overall_difficulty > 4 else 47,
-            "good": 67 if overall_difficulty > 4 else 77,
-            "ok": 97,
-            "meh": 121,
-            "miss": 158,
-        }
-
-    return {
-        "perfect": 16,
-        "great": int(64 - 3 * overall_difficulty),
-        "good": int(97 - 3 * overall_difficulty),
-        "ok": int(127 - 3 * overall_difficulty),
-        "meh": int(151 - 3 * overall_difficulty),
-        "miss": int(188 - 3 * overall_difficulty),
-    }
-
-
-def mania_score_value(diff, windows):
-    if diff <= windows["great"]:
-        return 300
-    if diff <= windows["good"]:
-        return 200
-    if diff <= windows["ok"]:
-        return 100
-    if diff <= windows["meh"]:
-        return 50
-    return 0
-
-
-def hit_image_key(value, diff=None):
-    if value == 300 and diff is not None and diff <= 16:
-        return "300g"
-    if value >= 300:
-        return "300"
-    return str(value)
-
-
-def replay_judgement_counts(replay):
-    return {
-        "300g": int(getattr(replay, "count_geki", 0)),
-        "300": int(getattr(replay, "count_300", 0)),
-        "200": int(getattr(replay, "count_katu", 0)),
-        "100": int(getattr(replay, "count_100", 0)),
-        "50": int(getattr(replay, "count_50", 0)),
-        "0": int(getattr(replay, "count_miss", 0)),
-    }
-
-
-def judgement_counts(judgements):
-    counts = {key: 0 for key in ("300g", "300", "200", "100", "50", "0")}
-
-    for judgement in judgements:
-        if judgement.get("counts_accuracy", True):
-            key = judgement.get("image_key") or hit_image_key(judgement["value"], judgement.get("diff"))
-            counts[key] = counts.get(key, 0) + 1
-
-    return counts
-
-
-def recompute_judgement_state(judgements):
-    """Rebuild combo and accuracy in display order, including stable LN ticks."""
-    combo = 0
-    judged = 0
-    score_sum = 0
-
-    judgements.sort(key=lambda j: (j.get("display_time", j["time"]), j.get("time", 0)))
-
-    for judgement in judgements:
-        if judgement.get("counts_accuracy", True):
-            value = judgement["value"]
-            judged += 1
-            score_sum += value
-
-        if judgement.get("combo_break", False):
-            combo = 0
-        else:
-            combo += int(judgement.get("combo_delta", 0))
-
-        judgement["combo"] = combo
-        judgement["accuracy"] = (score_sum / (judged * 300)) * 100 if judged else 100.0
-
-    return combo
-
-
-def build_event_lanes(events, keys):
-    """Index physical replay key states without re-applying Mirror."""
-    indexed = [[] for _ in range(keys)]
-
-    for event in events:
-        lane = event["lane"]
-
-        if 0 <= lane < keys:
-            indexed[lane].append((event["time"], event["pressed"]))
-
-    return [
-        ([event_time for event_time, _ in lane], [pressed for _, pressed in lane])
-        for lane in indexed
-    ]
-
-
-def add_stable_ln_ticks(judgements, notes, events, keys, mirror):
-    """Add stable's 100 ms hold-note combo ticks when the lane is held."""
-    judgements[:] = [j for j in judgements if j.get("kind") != "ln_tick"]
-    heads = {
-        j.get("note_id"): j
-        for j in judgements
-        if j.get("kind") == "ln_head"
-    }
-    lane_events = build_event_lanes(events, keys)
-
-    for note_id, note in enumerate(notes):
-        if note.get("end_time") is None:
-            continue
-
-        lane = keys - 1 - note["lane"] if mirror else note["lane"]
-        head = heads.get(note_id)
-
-        if head is None or head.get("value", 0) <= 0 or not (0 <= lane < keys):
-            continue
-
-        times, states = lane_events[lane]
-        tick_time = note["time"] + 100
-
-        while tick_time < note["end_time"]:
-            event_i = bisect_right(times, tick_time) - 1
-
-            if event_i >= 0 and states[event_i]:
-                judgements.append({
-                    "time": tick_time,
-                    "display_time": tick_time,
-                    "lane": lane,
-                    "kind": "ln_tick",
-                    "note_id": note_id,
-                    "combo": 0,
-                    "accuracy": 100.0,
-                    "value": 0,
-                    "diff": None,
-                    "image_key": None,
-                    "counts_accuracy": False,
-                    "combo_delta": 1,
-                    "combo_break": False,
-                })
-
-            tick_time += 100
-
-    recompute_judgement_state(judgements)
-
-
-def reconcile_judgements_with_replay(judgements, target_counts):
-    """Match stable's aggregate OSR results while retaining timing-based per-note ordering.
-
-    Stable replay frames do not contain the judgement assigned to each object. They do
-    contain authoritative aggregate counts, so timing error ranks provide the most
-    plausible per-object assignment and the OSR counts provide the exact final result.
-    """
-    scoring = [j for j in judgements if j.get("counts_accuracy", True)]
-
-    if len(scoring) != sum(target_counts.values()):
-        return False
-
-    ranked = sorted(
-        scoring,
-        key=lambda j: (
-            j.get("diff") is None,
-            j.get("diff") if j.get("diff") is not None else float("inf"),
-            j["time"],
-        ),
-    )
-    cursor = 0
-
-    for key in ("300g", "300", "200", "100", "50", "0"):
-        value = 300 if key in ("300g", "300") else int(key)
-
-        for judgement in ranked[cursor:cursor + target_counts[key]]:
-            judgement["value"] = value
-            judgement["image_key"] = key
-
-        cursor += target_counts[key]
-
-    for judgement in judgements:
-        if judgement.get("counts_accuracy", True):
-            value = judgement["value"]
-            judgement["combo_break"] = value <= 0
-            if judgement.get("kind") == "tap":
-                judgement["combo_delta"] = 1 if value > 0 else 0
-
-    recompute_judgement_state(judgements)
-
-    return True
-
-
-def build_judgements(notes, events, keys, mirror, overall_difficulty=5.0, is_convert=False):
-    windows = mania_hit_windows(overall_difficulty, is_convert)
-    press_events = [e for e in events if e["pressed"]]
-    release_events = [e for e in events if not e["pressed"]]
-
-    used_press = set()
-    used_release = set()
-
-    objects = []
-
-    for note_id, note in enumerate(notes):
-        lane = keys - 1 - note["lane"] if mirror else note["lane"]
-        is_ln = note["end_time"] is not None
-
-        objects.append({
-            "time": note["time"],
-            "lane": lane,
-            "kind": "tap" if not is_ln else "ln_head",
-            "note_id": note_id,
-            "end_time": note["end_time"],
-        })
-
-        if is_ln:
-            objects.append({
-                "time": note["end_time"],
-                "lane": lane,
-                "kind": "ln_tail",
-                "note_id": note_id,
-                "start_time": note["time"],
-            })
-
-    objects.sort(key=lambda x: x["time"])
-
-    results = []
-    debug_bad = []
-
-    score_sum = 0
-    judged = 0
-    lane_holding = [False] * keys
-    ln_heads = {}
-
-    for obj in objects:
-        value = 0
-        diff_used = None
-        event_time = None
-
-        counts_accuracy = obj["kind"] != "ln_head"
-
-        if obj["kind"] in ("tap", "ln_head"):
-            best = None
-            best_i = None
-
-            for i, event in enumerate(press_events):
-                if i in used_press or event["lane"] != obj["lane"]:
-                    continue
-
-                diff = abs(event["time"] - obj["time"])
-
-                if diff <= windows["miss"] and (best is None or diff < best):
-                    best = diff
-                    best_i = i
-
-            if best_i is not None:
-                used_press.add(best_i)
-                lane_holding[obj["lane"]] = True
-                diff_used = best
-                event_time = press_events[best_i]["time"]
-
-                value = mania_score_value(best, windows)
-
-                if obj["kind"] == "ln_head":
-                    ln_heads[obj["note_id"]] = {
-                        "diff": best,
-                        "value": value,
-                    }
-
-        elif obj["kind"] == "ln_tail":
-            best = None
-            best_i = None
-
-            for i, event in enumerate(release_events):
-                if i in used_release or event["lane"] != obj["lane"]:
-                    continue
-
-                diff = abs(event["time"] - obj["time"])
-
-                if diff <= windows["miss"] and (best is None or diff < best):
-                    best = diff
-                    best_i = i
-
-            head = ln_heads.get(obj["note_id"])
-
-            if best_i is not None and head is not None and head["value"] > 0:
-                used_release.add(best_i)
-                lane_holding[obj["lane"]] = False
-                diff_used = best
-                event_time = release_events[best_i]["time"]
-
-                combined = head["diff"] + best
-
-                if head["diff"] <= windows["perfect"] * 1.2 and combined <= windows["perfect"] * 2.4:
-                    value = 300
-                    diff_used = max(head["diff"], best)
-                elif head["diff"] <= windows["great"] * 1.1 and combined <= windows["great"] * 2.2:
-                    value = 300
-                    diff_used = max(head["diff"], best, windows["perfect"] + 1)
-                elif head["diff"] <= windows["good"] and combined <= windows["good"] * 2:
-                    value = 200
-                elif head["diff"] <= windows["ok"] and combined <= windows["ok"] * 2:
-                    value = 100
-                else:
-                    value = 50
-
-            lane_holding[obj["lane"]] = False
-
-        if counts_accuracy:
-            judged += 1
-            score_sum += value
-
-        accuracy = (score_sum / (judged * 300)) * 100 if judged else 100.0
-
-        result = {
-            "time": obj["time"],
-            "lane": obj["lane"],
-            "kind": obj["kind"],
-            "note_id": obj["note_id"],
-            "combo": 0,
-            "accuracy": accuracy,
-            "value": value,
-            "diff": diff_used,
-            "image_key": hit_image_key(value, diff_used),
-            "display_time": event_time if event_time is not None else obj["time"],
-            "hit_time": event_time,
-            "counts_accuracy": counts_accuracy,
-            "combo_delta": 1 if obj["kind"] in ("tap", "ln_head") and value > 0 else 0,
-            "combo_break": value <= 0,
-        }
-
-        results.append(result)
-
-        if counts_accuracy and value < 300 and len(debug_bad) < 100:
-            debug_bad.append(result)
-
-    add_stable_ln_ticks(results, notes, events, keys, mirror)
-    return results, debug_bad
-
-
-def find_best_offset(notes, events, keys, mirror, overall_difficulty=5.0, is_convert=False, target_counts=None):
-    best_offset = 0
-    best_score = None
-    best_judgements = []
-    best_bad = []
-
-    for offset in range(-100, 101):
-        shifted_events = [
-            {
-                "time": e["time"] + offset,
-                "lane": e["lane"],
-                "pressed": e["pressed"],
-            }
-            for e in events
-        ]
-
-        test_judgements, test_bad = build_judgements(notes, shifted_events, keys, mirror, overall_difficulty, is_convert)
-        test_accuracy = test_judgements[-1]["accuracy"] if test_judgements else 100.0
-        scoring = [j for j in test_judgements if j.get("counts_accuracy", True)]
-        misses = sum(1 for j in scoring if j["value"] == 0)
-        timing_error = sum((j["diff"] or 180) for j in scoring)
-        count_error = 0
-
-        if target_counts:
-            test_counts = judgement_counts(test_judgements)
-            count_error = sum(abs(test_counts[key] - target_counts[key]) for key in target_counts)
-
-        score = (count_error, -test_accuracy, misses, timing_error)
-
-        if best_score is None or score < best_score:
-            best_score = score
-            best_offset = offset
-            best_judgements = test_judgements
-            best_bad = test_bad
-
-    shifted_events = [
-        {
-            "time": e["time"] + best_offset,
-            "lane": e["lane"],
-            "pressed": e["pressed"],
-        }
-        for e in events
-    ]
-
-    return best_offset, shifted_events, best_judgements, best_bad
-
 
 def init_worker(ctx):
-    global CTX, RESIZE_CACHE, ALPHA_BBOX_CACHE, GPU_COMPOSITOR
+    global CTX, RESIZE_CACHE, ALPHA_BBOX_CACHE, GPU_COMPOSITOR, GPU_COMPOSITING_ACTIVE
     global PREVIOUS_RENDER_FRAME, PREVIOUS_RENDER_FRAME_ID
     cv2.setNumThreads(1)
     CTX = ctx
     RESIZE_CACHE = {}
     ALPHA_BBOX_CACHE = {}
     GPU_COMPOSITOR = None
+    GPU_COMPOSITING_ACTIVE = True
     PREVIOUS_RENDER_FRAME = None
     PREVIOUS_RENDER_FRAME_ID = None
 
@@ -1007,7 +648,7 @@ def draw_receptors(frame, skin, pressed, keys, lane_xs, column_widths, judge_y, 
         lane_width = column_widths[lane]
         center_x = lane_x + lane_width // 2
         receptor_size = note_widths[lane]
-        receptor_y = judge_y - receptor_size // 2
+        receptor_y = judge_y
 
         img_list = skin["keys_down"] if pressed[lane] else skin["keys"]
         receptor_img = img_list[lane] if lane < len(img_list) else None
@@ -1073,13 +714,20 @@ def draw_hit_lighting(
 ):
     normal = skin.get("hit_lighting_normal")
     long = skin.get("hit_lighting_long")
+    cfg = skin.get("cfg", {})
+    light_fps = max(1, int(cfg.get("light_frame_per_second") or 24))
+    normal_frames = skin.get("hit_lighting_normal_frames") or []
+    long_frames = skin.get("hit_lighting_long_frames") or []
+    normal_duration = int(len(normal_frames) * 1000 / light_fps) if normal_frames else 120
+    long_duration = int(len(long_frames) * 1000 / light_fps) if long_frames else 120
+    lighting_duration = max(24, normal_duration, long_duration)
 
     if not has_visible_alpha(normal) and not has_visible_alpha(long):
         return
 
-    lane_effects = {lane: "long" for lane in active_hold_lanes}
+    lane_effects = {lane: ("long", 0) for lane in active_hold_lanes}
     latest_i = bisect_right(judgement_times, map_time) - 1
-    visible_since = map_time - 120
+    visible_since = map_time - lighting_duration
 
     for index in range(latest_i, -1, -1):
         judgement = display_judgements[index]
@@ -1097,14 +745,24 @@ def draw_hit_lighting(
             continue
 
         kind = judgement.get("kind")
-        lane_effects[lane] = "long" if kind == "ln_head" else "normal"
+        effect = "long" if kind == "ln_head" else "normal"
+        age = max(0, map_time - display_time)
+        effect_duration = long_duration if effect == "long" else normal_duration
+        if age <= max(24, effect_duration):
+            previous = lane_effects.get(lane)
+            if previous is None or age < previous[1]:
+                lane_effects[lane] = (effect, age)
 
-    cfg = skin.get("cfg", {})
     normal_widths = cfg.get("lighting_n_widths")
     long_widths = cfg.get("lighting_l_widths")
 
-    for lane, effect in lane_effects.items():
-        image = long if effect == "long" and has_visible_alpha(long) else normal
+    for lane, (effect, age) in lane_effects.items():
+        frames = skin.get("hit_lighting_long_frames" if effect == "long" else "hit_lighting_normal_frames") or []
+        if frames:
+            frame_index = min(len(frames) - 1, int(age * light_fps / 1000.0))
+            image = frames[frame_index]
+        else:
+            image = long if effect == "long" and has_visible_alpha(long) else normal
 
         if not has_visible_alpha(image):
             continue
@@ -1120,7 +778,9 @@ def draw_hit_lighting(
 
         target_height = max(1, int(image.shape[0] * target_width / max(1, image.shape[1])))
         center_x = lane_xs[lane] + column_widths[lane] // 2
-        hit_center_y = judge_y - int(column_widths[lane] * 0.94) // 2
+        # LightingN/LightingL are centred on the judgement line according to
+        # skin.ini, not on the note cap's visual centre.
+        hit_center_y = judge_y
         paste_additive(
             frame,
             image,
@@ -1167,8 +827,7 @@ def draw_hit_judgements(
     cfg = skin.get("cfg", {})
     skin_scale = frame.shape[0] / 480
     score_position = cfg.get("score_position") if cfg.get("score_position") is not None else 300
-    combo_position = cfg.get("combo_position") if cfg.get("combo_position") is not None else 111
-    judgement_y = int(max(score_position, combo_position + 50) * skin_scale)
+    judgement_y = int(score_position * skin_scale)
 
     if custom_position is not None:
         play_center_x, judgement_y = custom_position
@@ -1190,7 +849,13 @@ def draw_hit_judgements(
 
     value = latest["value"]
     key = latest.get("image_key") or hit_image_key(value, latest.get("diff"))
-    img = skin.get("hit_images", {}).get(key)
+    age = max(0, map_time - display_time)
+    frames = skin.get("hit_image_frames", {}).get(key) or []
+    if frames:
+        frame_index = int(age * 60 / 1000.0) % len(frames)
+        img = frames[frame_index]
+    else:
+        img = skin.get("hit_images", {}).get(key)
 
     if img is not None and has_visible_alpha(img):
         density = skin.get("hit_image_densities", {}).get(key, 1.0)
@@ -1256,6 +921,36 @@ def mania_pp_value(star_rating, counts):
     return difficulty
 
 
+def rosu_mania_performance(osu_file, mods_int, counts):
+    """Calculate mania stars/pp locally when osu!.db has no star rating.
+
+    osu!.db only contains cached star ratings for maps that osu! has indexed.
+    Replays shared through Telegram often come with an .osz that we extract to
+    /tmp, so the database lookup returns None and the overlay showed pp: N/A.
+    rosu-pp-py lets us calculate the same information directly from the .osu.
+    """
+    try:
+        from rosu_pp_py import Beatmap, Difficulty, Performance
+    except Exception:
+        return None, None
+
+    try:
+        beatmap = Beatmap(path=str(osu_file))
+        difficulty = Difficulty(mods=int(mods_int or 0)).calculate(beatmap)
+        pp = Performance(
+            mods=int(mods_int or 0),
+            n_geki=int(counts.get("300g", 0)),
+            n300=int(counts.get("300", 0)),
+            n_katu=int(counts.get("200", 0)),
+            n100=int(counts.get("100", 0)),
+            n50=int(counts.get("50", 0)),
+            misses=int(counts.get("0", 0)),
+        ).calculate(beatmap)
+        return float(getattr(difficulty, "stars", 0.0) or 0.0), float(getattr(pp, "pp", 0.0) or 0.0)
+    except Exception:
+        return None, None
+
+
 def judgement_counts_at(judgements, map_time):
     counts = {"300g": 0, "300": 0, "200": 0, "100": 0, "50": 0, "0": 0}
 
@@ -1286,23 +981,38 @@ def draw_pp_counter(frame, judgements, map_time, width, y, star_rating, right_x=
 
 
 def stable_key_bpm(times, states, map_time):
+    # Show a responsive per-key tapping rate from the last actual press
+    # intervals. This intentionally does not count events in fixed buckets:
+    # the overlay is a "current rhythm" readout, so it should update as soon
+    # as the second press exists and then fade only after inactivity.
     end_i = bisect_right(times, map_time)
-    start_i = max(0, bisect_left(times, map_time - 2400))
+    start_i = max(0, bisect_left(times, map_time - 4000))
     press_times = [times[i] for i in range(start_i, end_i) if states[i]]
 
     if len(press_times) < 2:
         return 0
 
+    idle_ms = map_time - press_times[-1]
+    if idle_ms > 1800:
+        return 0
+
     intervals = [
         interval
-        for interval in np.diff(press_times[-9:])
-        if 20 <= interval <= 2000
+        for interval in np.diff(press_times[-6:])
+        if 20 <= interval <= 1800
     ]
 
     if not intervals:
         return 0
 
-    return min(999, int(round(60000.0 / float(np.median(intervals)))))
+    weights = np.arange(1, len(intervals) + 1, dtype=np.float32)
+    weighted_interval = float(np.average(np.asarray(intervals, dtype=np.float32), weights=weights))
+    bpm = 60000.0 / max(1.0, weighted_interval)
+
+    if idle_ms > 900:
+        bpm *= max(0.0, 1.0 - ((idle_ms - 900) / 900.0))
+
+    return min(999, int(round(bpm)))
 
 
 def draw_key_input_overlay(frame, event_lanes, pressed, map_time, width, y, custom_position=None):
@@ -1779,7 +1489,7 @@ def draw_results_screen(
     text_scale = max(0.55, interface_scale)
 
     rows = [
-        (("300g", counts.get("300g", 0)), ("300", counts.get("300", 0))),
+        (("300", counts.get("300", 0)), ("300g", counts.get("300g", 0))),
         (("200", counts.get("200", 0)), ("100", counts.get("100", 0))),
         (("50", counts.get("50", 0)), ("Miss", counts.get("0", 0))),
     ]
@@ -1869,12 +1579,18 @@ def draw_results_screen(
 
 def write_render_frame(output_dir, frame_id, frame):
     flush_gpu(frame)
+    stream_mode = CTX.get("frame_stream_mode", "mjpeg")
+    jpeg_quality = int(CTX.get("frame_jpeg_quality", 94))
 
     if FRAME_STREAM is not None:
+        if stream_mode == "raw":
+            FRAME_STREAM.write(np.ascontiguousarray(frame).data)
+            return
+
         ok, encoded = cv2.imencode(
             ".jpg",
             frame,
-            [cv2.IMWRITE_JPEG_QUALITY, 94],
+            [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
         )
 
         if not ok:
@@ -1887,7 +1603,7 @@ def write_render_frame(output_dir, frame_id, frame):
     cv2.imwrite(
         str(out),
         frame,
-        [cv2.IMWRITE_JPEG_QUALITY, 94],
+        [cv2.IMWRITE_JPEG_QUALITY, jpeg_quality],
     )
 
 
@@ -1947,6 +1663,7 @@ def frame_worker(frame_id):
         return frame_id
 
     frame = np.zeros((height, width, 3), dtype=np.uint8)
+    set_gpu_compositing_active(False)
 
     cfg = skin["cfg"]
 
@@ -1972,10 +1689,9 @@ def frame_worker(frame_id):
     if custom_playfield is not None:
         play_x = max(0, min(width - play_width, custom_playfield[0] - play_width // 2))
 
-    if cfg["hit_position"] is not None:
-        judge_y = int(cfg["hit_position"] * scale_y)
-    else:
-        judge_y = height - 120
+    raw_hit_position = cfg["hit_position"] if cfg["hit_position"] is not None else 402
+    hit_position = int(raw_hit_position)
+    judge_y = int(hit_position * scale_y)
 
     top_y = 0
 
@@ -2005,6 +1721,11 @@ def frame_worker(frame_id):
     for lane in range(keys):
         colour = skin_colour_to_bgra(cfg["colours"].get(f"Colour{lane + 1}"))
         fill_rgba_rect(frame, lane_xs[lane], top_y, lane_xs[lane] + column_widths[lane], height, colour)
+
+    # From here until the stage bottom is drawn most work is repeated skin
+    # texture composition: receptors, lights, notes and LN pieces. Keep that
+    # as a single GPU batch and read it back once before CPU-only overlays.
+    set_gpu_compositing_active(True)
 
     ui_scale = overlay_scale(height)
     state_i = bisect_right(judgement_times, map_time) - 1
@@ -2093,28 +1814,39 @@ def frame_worker(frame_id):
         note_w = note_widths[lane]
         note_h = max(12, int(lane_width * 0.24))
         note_x = center_x - note_w // 2
-        hit_y = judge_y - note_w // 2
+        hit_y = judge_y
         lane_scroll_speed = max(0.01, (hit_y - top_y) / effective_scroll_time_ms)
 
         y_head = int(hit_y - (note_time - map_time) * lane_scroll_speed)
         y_tail = int(hit_y - (end_time - map_time) * lane_scroll_speed)
 
         if note["end_time"] is not None:
-            visible_top = min(y_head, y_tail)
-            visible_bottom = max(y_head, y_tail)
-
-            if map_time >= note_time:
-                visible_bottom = hit_y
+            head_display_time = head_judgement.get("display_time", head_judgement["time"]) if head_judgement else note_time
+            tail_display_time = tail_judgement.get("display_time", tail_judgement["time"]) if tail_judgement else end_time
+            head_hit = head_judgement is not None and head_judgement["value"] > 0
+            missed_ln_scrolling_out = head_judgement is not None and head_judgement["value"] <= 0 and map_time >= head_display_time
+            head_visual_y = hit_y - note_w * 0.5 if map_time >= head_display_time and head_hit else y_head
+            tail_visual_y = min(y_tail, y_head) if missed_ln_scrolling_out else min(y_tail, hit_y - note_w * 0.5)
+            visible_top = min(head_visual_y, tail_visual_y)
+            visible_bottom = max(head_visual_y, tail_visual_y)
 
             if visible_bottom >= top_y and visible_top <= height:
                 body_img = skin["ln_bodies"][lane]
                 head_img = skin["ln_heads"][lane]
                 tail_img = skin["ln_tails"][lane]
+                tail_explicit = True
+                tail_explicit_flags = skin.get("ln_tail_explicit")
+                if tail_explicit_flags is not None and lane < len(tail_explicit_flags):
+                    tail_explicit = bool(tail_explicit_flags[lane])
 
-                if body_img is not None:
-                    body_h = max(1, visible_bottom - visible_top)
-                    paste_ln_body(frame, body_img, center_x, visible_top, visible_top + body_h, note_w)
-                else:
+                visual_span = abs(float(head_visual_y) - float(tail_visual_y))
+                if body_img is not None and visual_span > 2:
+                    cap_pad = 0
+                    body_top = max(top_y, int(visible_top - cap_pad))
+                    body_bottom = min(height, int(visible_bottom + cap_pad))
+                    body_h = max(1, body_bottom - body_top)
+                    paste_ln_body(frame, body_img, center_x, body_top, body_top + body_h, note_w)
+                elif body_img is None:
                     flush_gpu(frame)
                     cv2.rectangle(
                         frame,
@@ -2125,26 +1857,24 @@ def frame_worker(frame_id):
                     )
 
                 if head_img is not None:
-                    tail_display_time = tail_judgement.get("display_time", tail_judgement["time"]) if tail_judgement else end_time
-                    head_display_time = head_judgement.get("display_time", head_judgement["time"]) if head_judgement else note_time
-                    head_hit = head_judgement is not None and head_judgement["value"] > 0
-
                     if head_hit and head_display_time <= map_time < tail_display_time and pressed[lane]:
                         active_ln_hold = True
 
                     if map_time < head_display_time:
                         paste_rgba_centered(frame, head_img, center_x, y_head, scale=skin_scale, max_width=note_w)
                     elif head_hit and map_time < tail_display_time:
-                        paste_rgba_centered(frame, head_img, center_x, hit_y, scale=skin_scale, max_width=note_w)
+                        paste_rgba_centered(frame, head_img, center_x, head_visual_y, scale=skin_scale, max_width=note_w)
 
                 if (
                     tail_img is not None
-                    and y_tail >= top_y
-                    and y_tail <= height
+                    and tail_visual_y >= top_y
+                    and tail_visual_y <= height
+                    and not missed_ln_scrolling_out
                     and (tail_judgement is None or map_time < tail_judgement.get("display_time", tail_judgement["time"]))
+                    and (tail_explicit or body_img is None)
                 ):
                     if has_visible_alpha(tail_img):
-                        paste_rgba_centered(frame, tail_img, center_x, y_tail, scale=skin_scale, max_width=note_w)
+                        paste_rgba_centered(frame, tail_img, center_x, tail_visual_y, scale=skin_scale, max_width=note_w)
 
         else:
             note_img = skin["notes"][lane]
@@ -2163,6 +1893,8 @@ def frame_worker(frame_id):
 
     draw_stage_bottom(frame, skin, play_x, play_width, height, skin_scale)
     flush_gpu(frame)
+    set_gpu_compositing_active(False)
+
     if show_strain_graph:
         draw_difficulty_graph(
             frame,
@@ -2359,172 +2091,6 @@ def frame_batch_worker(frame_ids):
     return frame_ids[0], frame_ids[-1] + 1, str(segment_path)
 
 
-def make_audio_args(speed_multiplier, nightcore_pitch):
-    if speed_multiplier == 1.0:
-        return ["-filter:a", "apad"]
-
-    if nightcore_pitch and speed_multiplier == 1.5:
-        return ["-filter:a", "asetrate=44100*1.5,aresample=44100,apad"]
-
-    if speed_multiplier == 1.5:
-        return ["-filter:a", "atempo=1.5,apad"]
-
-    if speed_multiplier == 0.75:
-        return ["-filter:a", "atempo=0.75,apad"]
-
-    return ["-filter:a", f"atempo={speed_multiplier},apad"]
-
-
-def ffmpeg_binary():
-    global FFMPEG_BINARY
-
-    if FFMPEG_BINARY:
-        return FFMPEG_BINARY
-
-    candidates = []
-    configured = os.environ.get("MANIA_RENDERER_FFMPEG")
-
-    if configured:
-        candidates.append(configured)
-
-    system_ffmpeg = shutil.which("ffmpeg")
-
-    if system_ffmpeg:
-        candidates.append(system_ffmpeg)
-
-    try:
-        import imageio_ffmpeg
-        candidates.append(imageio_ffmpeg.get_ffmpeg_exe())
-    except Exception:
-        pass
-
-    for candidate in dict.fromkeys(candidates):
-        try:
-            subprocess.run(
-                [candidate, "-version"],
-                check=True,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-            )
-            FFMPEG_BINARY = candidate
-            return candidate
-        except (OSError, subprocess.CalledProcessError):
-            continue
-
-    raise RuntimeError(
-        "FFmpeg was not found. Reinstall the application or set MANIA_RENDERER_FFMPEG."
-    )
-
-
-def ffmpeg_encoder_names():
-    try:
-        result = subprocess.run(
-            [ffmpeg_binary(), "-hide_banner", "-encoders"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return result.stdout
-    except Exception:
-        return ""
-
-
-def vaapi_device():
-    for device in ("/dev/dri/renderD128", "/dev/dri/renderD129"):
-        if Path(device).exists():
-            return device
-
-    return None
-
-
-def video_encode_commands(fps, frame_stream, silent_video):
-    encoders = ffmpeg_encoder_names()
-    input_args = [
-        "-f", "mjpeg",
-        "-framerate", str(fps),
-        "-i", str(frame_stream),
-    ]
-    ffmpeg = ffmpeg_binary()
-
-    device = vaapi_device()
-
-    if device and "h264_vaapi" in encoders:
-        yield [
-            ffmpeg, "-y",
-            "-vaapi_device", device,
-            *input_args,
-            "-vf", "format=nv12,hwupload",
-            "-c:v", "h264_vaapi",
-            "-qp", "18",
-            str(silent_video),
-        ]
-
-    if "h264_qsv" in encoders:
-        yield [
-            ffmpeg, "-y",
-            *input_args,
-            "-vf", "format=nv12",
-            "-c:v", "h264_qsv",
-            "-global_quality", "18",
-            str(silent_video),
-        ]
-
-    if "h264_amf" in encoders:
-        yield [
-            ffmpeg, "-y",
-            *input_args,
-            "-c:v", "h264_amf",
-            "-quality", "quality",
-            "-qp_i", "18",
-            "-qp_p", "18",
-            str(silent_video),
-        ]
-
-    yield [
-        ffmpeg, "-y",
-        *input_args,
-        "-c:v", "libx264",
-        "-pix_fmt", "yuv420p",
-        "-preset", "fast",
-        "-crf", "18",
-        str(silent_video),
-    ]
-
-
-def encode_silent_video(fps, frame_stream, silent_video, progress_callback=None):
-    last_error = None
-    attempts = []
-
-    for cmd in video_encode_commands(fps, frame_stream, silent_video):
-        encoder = cmd[cmd.index("-c:v") + 1]
-
-        if progress_callback:
-            progress_callback(87, f"Encoding video: trying {encoder}...")
-
-        try:
-            env = os.environ.copy()
-
-            if encoder in ("h264_vaapi", "h264_qsv") and Path("/usr/lib/dri/iHD_drv_video.so").exists():
-                env.setdefault("LIBVA_DRIVER_NAME", "iHD")
-
-            result = subprocess.run(cmd, check=True, capture_output=True, text=True, env=env)
-            attempts.append({"encoder": encoder, "status": "success"})
-            return cmd, attempts
-        except subprocess.CalledProcessError as e:
-            last_error = e
-            stderr = (e.stderr or "").strip().splitlines()
-            attempts.append({
-                "encoder": encoder,
-                "status": "failed",
-                "error": "\n".join(stderr[-8:]),
-            })
-
-    if last_error:
-        raise last_error
-
-    return None, attempts
-
-
 def write_debug_report(
     output_file,
     replay_file,
@@ -2546,6 +2112,7 @@ def write_debug_report(
     judgement_counts_reconciled=False,
     simulated_judgement_counts=None,
     visual_options=None,
+    missing_skin_elements=None,
 ):
     replay = get_replay(replay_file) if replay_file else None
 
@@ -2570,6 +2137,7 @@ def write_debug_report(
         "video_encoder_attempts": video_encoder_attempts or [],
         "judgement_counts_reconciled": judgement_counts_reconciled,
         "simulated_judgement_counts": simulated_judgement_counts or {},
+        "missing_skin_elements": missing_skin_elements or [],
         "visual_options": visual_options or {},
         "first_bad_judgements": bad_judgements[:100],
     }
@@ -2590,20 +2158,6 @@ def write_debug_report(
 
     with open(debug_path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
-
-
-def format_duration(seconds):
-    seconds = max(0, int(seconds))
-    minutes, seconds = divmod(seconds, 60)
-    hours, minutes = divmod(minutes, 60)
-
-    if hours:
-        return f"{hours}h {minutes}m"
-
-    if minutes:
-        return f"{minutes}m {seconds}s"
-
-    return f"{seconds}s"
 
 
 def render_video(
@@ -2627,48 +2181,83 @@ def render_video(
     cancel_callback=None,
 ):
     ensure_not_cancelled(cancel_callback)
+    prepare_started = time.time()
 
-    if progress_callback:
-        progress_callback(0, "Preparing render: reading beatmap and replay...")
+    def report_prepare(percent, text, expected_remaining=None):
+        if not progress_callback:
+            return
+
+        if expected_remaining is not None:
+            text = f"{text} | render starts in ~{format_duration(expected_remaining)}"
+
+        progress_callback(percent, text)
+
+    report_prepare(0, "Preparing render: reading beatmap and replay...", 8)
 
     beatmap = parse_osu(osu_file)
     ensure_not_cancelled(cancel_callback)
+    report_prepare(1, f"Preparing render: loaded beatmap with {len(beatmap.notes):,} objects", 7)
 
     width, height = map(int, resolution.split("x"))
-    fps = 60
+    try:
+        fps = int(os.environ.get("MANIA_RENDERER_FPS", "60"))
+    except ValueError:
+        fps = 60
+
+    fps = max(15, min(240, fps))
+
+    try:
+        output_fps = int(os.environ.get("MANIA_RENDERER_OUTPUT_FPS", str(fps)))
+    except ValueError:
+        output_fps = fps
+
+    output_fps = max(15, min(240, output_fps))
+
+    try:
+        frame_jpeg_quality = int(os.environ.get("MANIA_RENDERER_FRAME_JPEG_QUALITY", "94"))
+    except ValueError:
+        frame_jpeg_quality = 94
+
+    frame_jpeg_quality = max(60, min(100, frame_jpeg_quality))
+    frame_stream_mode = os.environ.get("MANIA_RENDERER_FRAME_STREAM", "mjpeg").strip().lower()
+
+    if frame_stream_mode not in {"mjpeg", "raw"}:
+        frame_stream_mode = "mjpeg"
     background_path = Path(osu_file).parent / beatmap.background_file
     background_image = cv2.imread(str(background_path), cv2.IMREAD_COLOR) if background_path.exists() else None
     results_background = prepare_results_background(background_image, width, height, results_background_opacity)
 
-    mod_settings = get_mod_settings(replay_file) if replay_file else {
+    replay = get_replay(replay_file) if replay_file else None
+    mod_settings = mod_settings_from_replay(replay) if replay else {
         "mods_int": 0,
         "speed_multiplier": 1.0,
         "mirror": False,
         "mods": "NM",
         "nightcore_pitch": False,
+        "score_v2": False,
     }
 
     speed_multiplier = mod_settings["speed_multiplier"]
     mirror = mod_settings["mirror"]
     nightcore_pitch = mod_settings["nightcore_pitch"]
+    score_v2 = mod_settings.get("score_v2", False)
     overall_difficulty = beatmap.overall_difficulty
     is_convert = beatmap.mode != 3
 
     notes = [{"lane": n.lane, "time": n.time, "end_time": n.end_time} for n in beatmap.notes]
     star_rating = read_mania_star_rating(osu_file, beatmap.md5_hash, mod_settings["mods_int"]) if replay_file else None
 
-    if progress_callback:
-        progress_callback(0, "Preparing render: analysing replay timing...")
+    report_prepare(2, "Preparing render: decoding replay inputs...", 6)
 
     raw_events = get_replay_events(replay_file, beatmap.keys) if replay_file else []
     events = raw_events
-    replay = get_replay(replay_file) if replay_file else None
-    replay_accuracy = get_stable_mania_accuracy(replay_file) if replay_file else 100.0
+    replay_accuracy = stable_mania_accuracy_from_replay(replay, score_v2) if replay else 100.0
     target_counts = replay_judgement_counts(replay) if replay else None
     ensure_not_cancelled(cancel_callback)
+    report_prepare(3, f"Preparing render: matching {len(raw_events):,} replay inputs...", 5)
 
     if events:
-        judgements, bad_judgements = build_judgements(notes, events, beatmap.keys, mirror, overall_difficulty, is_convert)
+        judgements, bad_judgements = build_judgements(notes, events, beatmap.keys, mirror, overall_difficulty, is_convert, score_v2)
         simulated_accuracy = judgements[-1]["accuracy"] if judgements else 100.0
 
         if abs(simulated_accuracy - replay_accuracy) < 0.01 and not bad_judgements:
@@ -2682,12 +2271,13 @@ def render_video(
                 overall_difficulty,
                 is_convert,
                 target_counts,
+                score_v2,
             )
     else:
         best_offset, judgements, bad_judgements = 0, [], []
         simulated_accuracy = 100.0
 
-    if judgements:
+    if judgements and not score_v2:
         # Judgement matching may apply an automatic timing correction. Stable LN
         # ticks, however, are driven by the original replay key state at each
         # beatmap tick, so keep them on the unshifted replay timeline.
@@ -2700,6 +2290,7 @@ def render_video(
     ][:100]
     simulated_accuracy = judgements[-1]["accuracy"] if judgements else 100.0
     ensure_not_cancelled(cancel_callback)
+    report_prepare(4, "Preparing render: building overlays and timing cache...", 4)
 
     start_map_time = max(0, notes[0]["time"] - 2000)
     gameplay_end_time = max((note["end_time"] if note["end_time"] is not None else note["time"]) for note in notes)
@@ -2709,36 +2300,77 @@ def render_video(
         if show_results_screen
         else gameplay_end_time + 2000
     )
-    final_counts = judgement_counts(judgements)
-    final_pp = mania_pp_value(star_rating, final_counts)
     replay_score = int(getattr(replay, "score", 0)) if replay else 0
     replay_max_combo = int(getattr(replay, "max_combo", 0)) if replay else 0
     replay_perfect = bool(getattr(replay, "perfect", False)) if replay else False
+    final_counts = judgement_counts(judgements)
+    rosu_star_rating, rosu_final_pp = rosu_mania_performance(osu_file, mod_settings["mods_int"], final_counts)
+    if star_rating is None and rosu_star_rating is not None:
+        star_rating = rosu_star_rating
+    final_pp = rosu_final_pp if rosu_final_pp is not None else mania_pp_value(star_rating, final_counts)
     rank = replay_rank(simulated_accuracy, mod_settings["mods_int"])
     difficulty_profile = build_difficulty_profile(notes, start_map_time, gameplay_end_time) if show_strain_graph else []
     vignette_mask = create_vignette_mask(width, height, float(vignette_strength) / 100.0)
+    report_prepare(5, "Preparing render: checking GPU and encoder...", 3)
 
     real_duration_ms = int((end_map_time - start_map_time) / speed_multiplier)
     total_frames = max(1, int(real_duration_ms / 1000 * fps))
+    test_limit_seconds = 0.0
+    try:
+        test_limit_seconds = float(os.environ.get("MANIA_RENDERER_LIMIT_SECONDS", "0") or 0)
+    except ValueError:
+        test_limit_seconds = 0.0
+
+    if test_limit_seconds > 0:
+        limited_frames = max(1, int(test_limit_seconds * fps))
+        if limited_frames < total_frames:
+            total_frames = limited_frames
+            end_map_time = start_map_time + int(total_frames * 1000 / fps * speed_multiplier)
+            results_start_time = end_map_time + 1
+            gameplay_end_time = min(gameplay_end_time, end_map_time)
     scroll_time_ms = mania_scroll_time_ms(scroll_speed_value)
 
     gpu_renderer = None
+    gpu_error = None
 
     if gpu_compositing:
-        from osu_mania_replay_renderer.gpu_compositor import detect_gpu_renderer
+        from osu_mania_replay_renderer.gpu_compositor import detect_gpu_renderer, gpu_unavailable_reason
 
         gpu_renderer = detect_gpu_renderer()
+        gpu_error = gpu_unavailable_reason() if gpu_renderer is None else None
 
-    workers = max(1, min(os.cpu_count() or 1, 8))
+    if gpu_compositing and os.environ.get("MANIA_RENDERER_REQUIRE_GPU") and gpu_renderer is None:
+        message = "GPU frame compositing was required, but no OpenGL GPU context could be created."
+
+        if gpu_error:
+            message += f" Reason: {gpu_error}"
+
+        raise RuntimeError(message)
+
+    cpu_count = os.cpu_count() or 1
+
+    if gpu_renderer:
+        default_workers = max(1, min(cpu_count, 4))
+        worker_env = os.environ.get("MANIA_RENDERER_GPU_WORKERS")
+    else:
+        default_workers = max(1, min(cpu_count, 8))
+        worker_env = os.environ.get("MANIA_RENDERER_CPU_WORKERS")
+
+    try:
+        workers = int(worker_env) if worker_env else default_workers
+    except ValueError:
+        workers = default_workers
+
+    workers = max(1, min(workers, cpu_count))
     megapixels = (width * height) / 1_000_000
     estimated_render_fps = max(4.0, workers * ((12.0 if gpu_renderer else 9.0) / max(1.0, megapixels)))
     estimated_seconds = total_frames / estimated_render_fps
-    render_backend = f"GPU: {gpu_renderer}" if gpu_renderer else "CPU compositing"
+    render_backend = f"GPU frame compositing: {gpu_renderer}" if gpu_renderer else "CPU frame compositing"
 
     if progress_callback:
         progress_callback(
-            0,
-            f"Preparing render: {total_frames} frames | {render_backend} | ETA: ~{format_duration(estimated_seconds)}"
+            6,
+            f"Preparing render: {total_frames} frames | {render_backend} | render ETA ~{format_duration(estimated_seconds)}"
         )
 
     temp_dir = Path(tempfile.mkdtemp(prefix=".mania-render-", dir=str(Path(output_file).parent)))
@@ -2756,6 +2388,7 @@ def render_video(
 
     skin = load_mania_skin(skin_folder, beatmap.keys)
     ensure_active()
+    report_prepare(7, f"Preparing render: loaded skin, starting renderer after {format_duration(time.time() - prepare_started)}", 1)
     results_frame = np.zeros((height, width, 3), dtype=np.uint8)
     draw_results_screen(
         results_frame,
@@ -2834,6 +2467,7 @@ def render_video(
         "width": width,
         "height": height,
         "fps": fps,
+        "output_fps": output_fps,
         "start_map_time": start_map_time,
         "end_map_time": end_map_time,
         "gameplay_end_time": gameplay_end_time,
@@ -2849,9 +2483,11 @@ def render_video(
         "output_dir": str(temp_dir),
         "segments_dir": str(segments_dir),
         "scroll_time_ms": scroll_time_ms,
+        "scroll_speed_value": float(scroll_speed_value),
         "motion_blur": int(motion_blur),
         "speed_multiplier": speed_multiplier,
         "mirror": mirror,
+        "score_v2": score_v2,
         "skin": skin,
         "judgements": judgements,
         "display_judgements": display_judgements,
@@ -2881,6 +2517,8 @@ def render_video(
         "layout_positions": layout_positions or {},
         "gpu_compositing": bool(gpu_renderer),
         "vignette_mask": vignette_mask,
+        "frame_jpeg_quality": frame_jpeg_quality,
+        "frame_stream_mode": frame_stream_mode,
     }
 
     write_debug_report(
@@ -2901,6 +2539,7 @@ def render_video(
         star_rating=star_rating,
         judgement_counts_reconciled=counts_reconciled,
         simulated_judgement_counts=judgement_counts(judgements),
+        missing_skin_elements=skin.get("missing_elements", []),
         visual_options={
             "show_side_overlay": bool(show_side_overlay),
             "show_strain_graph": bool(show_strain_graph),
@@ -2912,8 +2551,51 @@ def render_video(
             "layout_positions": layout_positions or {},
             "gpu_compositing": bool(gpu_renderer),
             "gpu_renderer": gpu_renderer,
+            "gpu_error": gpu_error,
+            "fps": fps,
+            "output_fps": output_fps,
+            "test_limit_seconds": test_limit_seconds,
+            "frame_jpeg_quality": frame_jpeg_quality,
+            "frame_stream_mode": frame_stream_mode,
         },
     )
+
+    fast_gpu_setting = os.environ.get("MANIA_RENDERER_FAST_GPU_ENGINE", "1").strip().lower()
+    use_fast_gpu_engine = (
+        fast_gpu_setting not in {"0", "false", "no", "off"}
+        and bool(gpu_renderer)
+        and int(motion_blur) <= 0
+    )
+
+    if use_fast_gpu_engine:
+        if progress_callback:
+            progress_callback(7, "Fast GPU engine: starting OpenGL render pipeline...")
+
+        try:
+            from osu_mania_replay_renderer.fast_gpu_renderer import render_fast_gpu
+
+            render_fast_gpu(
+                ctx,
+                osu_file,
+                beatmap,
+                output_file,
+                total_frames,
+                start_map_time,
+                total_frames / fps,
+                nightcore_pitch,
+                progress_callback,
+                cancel_callback,
+            )
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return
+        except Exception as error:
+            if os.environ.get("MANIA_RENDERER_REQUIRE_FAST_GPU"):
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                Path(output_file).unlink(missing_ok=True)
+                raise
+
+            if progress_callback:
+                progress_callback(0, f"Fast GPU engine failed ({error}); falling back to classic renderer...")
 
     start = time.time()
     done = 0
@@ -2931,7 +2613,17 @@ def render_video(
     try:
         next_frame = 0
         futures = set()
-        batch_size = max(8, min(30, total_frames // max(1, workers * 8)))
+
+        try:
+            configured_batch_size = int(os.environ.get("MANIA_RENDERER_BATCH_SIZE", "0"))
+        except ValueError:
+            configured_batch_size = 0
+
+        if configured_batch_size > 0:
+            batch_size = configured_batch_size
+        else:
+            batch_size = max(16, min(120, total_frames // max(1, workers * 4)))
+
         max_pending = workers * 2
         segments = []
 
@@ -2984,7 +2676,7 @@ def render_video(
     else:
         executor.shutdown(wait=True)
 
-    frame_stream = temp_dir / "frames.mjpg"
+    frame_stream = temp_dir / ("frames.raw" if frame_stream_mode == "raw" else "frames.mjpg")
     ensure_active()
 
     if progress_callback:
@@ -2999,7 +2691,16 @@ def render_video(
     ensure_active()
     silent_video = temp_dir / "silent.mp4"
 
-    encoder_cmd, encoder_attempts = encode_silent_video(fps, frame_stream, silent_video, progress_callback)
+    encoder_cmd, encoder_attempts = encode_silent_video(
+        fps,
+        frame_stream,
+        silent_video,
+        progress_callback,
+        frame_stream_mode=frame_stream_mode,
+        width=width,
+        height=height,
+        output_fps=output_fps,
+    )
     ensure_active()
     debug_path = Path(output_file).with_suffix(".debug.json")
 

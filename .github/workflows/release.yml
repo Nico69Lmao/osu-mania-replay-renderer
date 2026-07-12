@@ -34,13 +34,8 @@ jobs:
         shell: pwsh
         run: |
           $version = "$env:RELEASE_TAG".TrimStart("v")
-          uv run pyinstaller --noconfirm --clean --onefile --windowed `
-            --name osu-mania-replay-renderer `
-            --paths src `
-            --collect-all imageio_ffmpeg `
-            --copy-metadata osrparse `
-            src/osu_mania_replay_renderer/__main__.py
-          Move-Item dist/osu-mania-replay-renderer.exe "dist/osu-mania-replay-renderer-$version-Windows-x86_64.exe"
+          uv run pyinstaller --noconfirm --clean osu-mania-replay-renderer-fastgpu.spec
+          Move-Item dist/osu-mania-replay-renderer-fastgpu.exe "dist/osu-mania-replay-renderer-$version-Windows-x86_64.exe"
           $process = Start-Process `
             -FilePath "dist/osu-mania-replay-renderer-$version-Windows-x86_64.exe" `
             -ArgumentList "--multiprocessing-smoke-test" `
@@ -69,6 +64,9 @@ jobs:
             --name osu-mania-replay-renderer \
             --paths src \
             --collect-all imageio_ffmpeg \
+            --collect-all glcontext \
+            --collect-all moderngl \
+            --add-data "src/osu_mania_replay_renderer/bundled_skins:osu_mania_replay_renderer/bundled_skins" \
             --copy-metadata osrparse \
             src/osu_mania_replay_renderer/__main__.py
       - name: Test frozen multiprocessing

@@ -13,7 +13,6 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QFileDialog,
     QFormLayout,
-    QGraphicsOpacityEffect,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -22,26 +21,39 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QSpinBox,
     QStyle,
-    QTabWidget,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
 
 from osu_mania_replay_renderer.beatmap_parser import parse_osu
+from osu_mania_replay_renderer.bundled_skins import (
+    bundled_skin_entries,
+    bundled_skin_labels,
+    bundled_skin_path,
+    matching_bundled_skin,
+)
 from osu_mania_replay_renderer.osu_finder import (
     find_beatmap_by_hash,
     find_osu_folder,
     get_replay_info,
     is_osu_folder,
+    list_recent_replays,
     list_skins,
 )
-from osu_mania_replay_renderer.layout_editor import LayoutEditor
 from osu_mania_replay_renderer.renderer import RenderCancelled, render_video
 from osu_mania_replay_renderer.settings import load_settings, update_setting
 from osu_mania_replay_renderer.updater import RELEASES_URL, check_for_update
 from osu_mania_replay_renderer.version import __version__
+
+
+SUPPORT_URL = "https://ko-fi.com/nico69yaza"
+SUPPORT_MESSAGE = (
+    "This tool is made by one person after many hours of testing and coding.\n\n"
+    "A small donation really helps the project grow and helps me keep going.\n\n"
+    "Thank you to everyone who decides to donate."
+)
 
 
 def setting_bool(value):
@@ -70,7 +82,14 @@ class RenderThread(QThread):
         self.cancel_event.set()
 
     def run(self):
+        previous_require_fast = os.environ.get("MANIA_RENDERER_REQUIRE_FAST_GPU")
+        previous_require_gpu = os.environ.get("MANIA_RENDERER_REQUIRE_GPU")
+
         try:
+            if self.options.pop("require_fast_gpu", False):
+                os.environ["MANIA_RENDERER_REQUIRE_FAST_GPU"] = "1"
+                os.environ["MANIA_RENDERER_REQUIRE_GPU"] = "1"
+
             render_video(
                 osu_file=self.osu_file,
                 skin_folder=self.skin_folder,
@@ -85,6 +104,16 @@ class RenderThread(QThread):
             self.cancelled.emit()
         except Exception as error:
             self.failed.emit(str(error))
+        finally:
+            if previous_require_fast is None:
+                os.environ.pop("MANIA_RENDERER_REQUIRE_FAST_GPU", None)
+            else:
+                os.environ["MANIA_RENDERER_REQUIRE_FAST_GPU"] = previous_require_fast
+
+            if previous_require_gpu is None:
+                os.environ.pop("MANIA_RENDERER_REQUIRE_GPU", None)
+            else:
+                os.environ["MANIA_RENDERER_REQUIRE_GPU"] = previous_require_gpu
 
 
 class UpdateCheckThread(QThread):
@@ -172,22 +201,49 @@ class BeatmapLookupThread(QThread):
                 self.failed.emit(str(error))
 
 
+class SearchableComboBox(QComboBox):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setEditable(True)
+        self.setInsertPolicy(QComboBox.NoInsert)
+        self.setCursor(Qt.PointingHandCursor)
+
+        self.arrow_button = QToolButton(self)
+        self.arrow_button.setObjectName("comboArrowButton")
+        self.arrow_button.setText("▾")
+        self.arrow_button.setCursor(Qt.PointingHandCursor)
+        self.arrow_button.setFocusPolicy(Qt.NoFocus)
+        self.arrow_button.clicked.connect(self.showPopup)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        button_width = 32
+        self.arrow_button.setGeometry(
+            self.width() - button_width - 2,
+            2,
+            button_width,
+            max(0, self.height() - 4),
+        )
+
+
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("osu!mania Replay Renderer")
-        self.setMinimumSize(880, 650)
+        self.setMinimumSize(980, 680)
 
         self.settings = load_settings()
         self.osu_folder = self.settings["osu_folder"] or None
         self.replay_file = self.settings["last_replay"] or None
         self.beatmap_file = self.settings["last_beatmap"] or None
-        self.layout_positions = dict(self.settings.get("layout_positions") or {})
         self.skin_folder = None
         self.thread = None
         self.update_thread = None
         self.discovery_thread = None
         self.beatmap_thread = None
+        self.replay_combo_paths = []
+        self.all_skin_names = []
+        self.replay_search_dirty = False
 
         self._build_ui()
         self._apply_style()
@@ -204,19 +260,30 @@ class MainWindow(QMainWindow):
 
     def _build_ui(self):
         root = QWidget()
+        root.setObjectName("appRoot")
         root_layout = QVBoxLayout(root)
-        root_layout.setContentsMargins(24, 20, 24, 22)
-        root_layout.setSpacing(16)
+        root_layout.setContentsMargins(28, 24, 28, 24)
+        root_layout.setSpacing(18)
 
-        title = QLabel("osu!mania Replay Renderer")
+        header = QHBoxLayout()
+        header.setSpacing(14)
+        title_column = QVBoxLayout()
+        title_column.setSpacing(2)
+        title = QLabel("osu!mania Fast Renderer")
         title.setObjectName("pageTitle")
-        subtitle = QLabel(f"Render local osu!mania replays with legacy skin support  •  v{__version__}")
+        subtitle = QLabel(f"GPU-first replay rendering with dynamic skin support  •  v{__version__}")
         subtitle.setObjectName("pageSubtitle")
-        root_layout.addWidget(title)
-        root_layout.addWidget(subtitle)
+        title_column.addWidget(title)
+        title_column.addWidget(subtitle)
 
-        self.tabs = QTabWidget()
-        self.tabs.setDocumentMode(True)
+        self.support_button = QPushButton("♥")
+        self.support_button.setObjectName("supportButton")
+        self.support_button.setToolTip("Support the project")
+        self.support_button.clicked.connect(lambda: self.show_support_popup(manual=True))
+
+        header.addLayout(title_column, 1)
+        header.addWidget(self.support_button, 0, Qt.AlignRight | Qt.AlignTop)
+        root_layout.addLayout(header)
 
         render_tab = QWidget()
         render_layout = QVBoxLayout(render_tab)
@@ -229,54 +296,14 @@ class MainWindow(QMainWindow):
         render_layout.addLayout(content, 1)
         render_layout.addWidget(self._build_render_group())
 
-        self.layout_editor = LayoutEditor(self.layout_positions)
-        self.layout_editor.positions_changed.connect(self._layout_positions_changed)
         self.skin_combo.currentTextChanged.connect(self._skin_selection_changed)
-        self.tabs.addTab(render_tab, "Render")
-        self.tabs.addTab(self.layout_editor, "Layout")
-        self.tabs.currentChanged.connect(self._animate_current_tab)
-        root_layout.addWidget(self.tabs, 1)
+        root_layout.addWidget(render_tab, 1)
 
         self.setCentralWidget(root)
 
-    def _layout_positions_changed(self, positions):
-        self.layout_positions = dict(positions)
-        self.settings["layout_positions"] = dict(positions)
-        update_setting("layout_positions", positions)
-
     def _skin_selection_changed(self, value):
-        update_setting("last_skin", value)
-
-        if not hasattr(self, "layout_editor"):
-            return
-
-        skin_folder = None
-
-        if self.osu_folder and value and value != "No skin found":
-            skin_folder = str(Path(self.osu_folder) / "Skins" / value)
-
-        keys = 4
-
-        if self.beatmap_file:
-            try:
-                keys = parse_osu(self.beatmap_file).keys
-            except Exception:
-                pass
-
-        self.layout_editor.set_skin(skin_folder, keys)
-
-    def _animate_current_tab(self, index):
-        page = self.tabs.widget(index)
-        effect = QGraphicsOpacityEffect(page)
-        page.setGraphicsEffect(effect)
-        animation = QPropertyAnimation(effect, b"opacity", page)
-        animation.setDuration(170)
-        animation.setStartValue(0.62)
-        animation.setEndValue(1.0)
-        animation.setEasingCurve(QEasingCurve.OutCubic)
-        animation.finished.connect(lambda: page.setGraphicsEffect(None))
-        page._fade_animation = animation
-        animation.start()
+        if value and value in self.all_skin_names:
+            update_setting("last_skin", value)
 
     def _path_row(self, label, button_text, icon, callback):
         row = QVBoxLayout()
@@ -310,6 +337,11 @@ class MainWindow(QMainWindow):
             QStyle.SP_FileIcon,
             self.select_replay,
         )
+        self.replay_combo = SearchableComboBox()
+        self.replay_combo.setPlaceholderText("Search recent replays...")
+        self.replay_combo.activated.connect(self._recent_replay_selected)
+        self.replay_combo.lineEdit().textEdited.connect(self._replay_search_edited)
+        self.replay_combo.lineEdit().editingFinished.connect(self._refresh_replays_from_search)
         beatmap_row, self.beatmap_label = self._path_row(
             self.beatmap_file or "No beatmap selected",
             "Select beatmap manually",
@@ -319,6 +351,7 @@ class MainWindow(QMainWindow):
 
         layout.addLayout(osu_row)
         layout.addLayout(replay_row)
+        layout.addWidget(self.replay_combo)
 
         self.info_label = QLabel("Replay details unavailable")
         self.info_label.setObjectName("infoLabel")
@@ -338,7 +371,9 @@ class MainWindow(QMainWindow):
 
         skin_label = QLabel("Skin")
         skin_label.setObjectName("fieldLabel")
-        self.skin_combo = QComboBox()
+        self.skin_combo = SearchableComboBox()
+        self.skin_combo.setPlaceholderText("Search skins...")
+        self.skin_combo.lineEdit().editingFinished.connect(self._filter_skins_from_search)
         self.skin_combo.addItem("No skin found")
         layout.addWidget(skin_label)
         layout.addWidget(self.skin_combo)
@@ -352,13 +387,9 @@ class MainWindow(QMainWindow):
         layout.setHorizontalSpacing(14)
         layout.setVerticalSpacing(12)
 
-        self.resolution_combo = QComboBox()
-        self.resolution_combo.addItems([
-            "640x360", "854x480", "960x540", "1024x576",
-            "1280x720", "1920x1080", "2560x1440", "3840x2160",
-        ])
-        resolution_index = self.resolution_combo.findText(self.settings.get("resolution", "1280x720"))
-        self.resolution_combo.setCurrentIndex(max(0, resolution_index))
+        self.locked_resolution = "1920x1080"
+        self.resolution_label = QLabel(f"{self.locked_resolution}  •  locked for the fast renderer")
+        self.resolution_label.setObjectName("lockedOptionLabel")
 
         self.scroll_speed_spin = QDoubleSpinBox()
         self.scroll_speed_spin.setRange(1.0, 40.0)
@@ -366,19 +397,17 @@ class MainWindow(QMainWindow):
         self.scroll_speed_spin.setDecimals(1)
         self.scroll_speed_spin.setValue(float(self.settings.get("scroll_speed", "30.0")))
 
-        self.motion_blur_spin = QSpinBox()
-        self.motion_blur_spin.setRange(0, 8)
-        self.motion_blur_spin.setValue(int(self.settings.get("motion_blur", "0")))
-
-        self.vignette_spin = QSpinBox()
+        self.vignette_spin = QDoubleSpinBox()
         self.vignette_spin.setRange(0, 60)
+        self.vignette_spin.setDecimals(0)
         self.vignette_spin.setSuffix(" %")
-        self.vignette_spin.setValue(int(self.settings.get("vignette_strength", "12")))
+        self.vignette_spin.setValue(float(self.settings.get("vignette_strength", "12")))
 
-        self.results_opacity_spin = QSpinBox()
+        self.results_opacity_spin = QDoubleSpinBox()
         self.results_opacity_spin.setRange(20, 100)
+        self.results_opacity_spin.setDecimals(0)
         self.results_opacity_spin.setSuffix(" %")
-        self.results_opacity_spin.setValue(int(self.settings.get("results_background_opacity", "62")))
+        self.results_opacity_spin.setValue(float(self.settings.get("results_background_opacity", "62")))
 
         self.results_duration_spin = QDoubleSpinBox()
         self.results_duration_spin.setRange(1.0, 15.0)
@@ -394,8 +423,9 @@ class MainWindow(QMainWindow):
         self.results_screen_check.setChecked(setting_bool(self.settings.get("show_results_screen", True)))
         self.hold_combo_colour_check = QCheckBox("Colour combo during holds")
         self.hold_combo_colour_check.setChecked(setting_bool(self.settings.get("colour_combo_during_holds", True)))
-        self.gpu_compositing_check = QCheckBox("GPU skin compositing")
-        self.gpu_compositing_check.setChecked(setting_bool(self.settings.get("gpu_compositing", True)))
+
+        fast_renderer_label = QLabel("Fast GPU renderer only")
+        fast_renderer_label.setObjectName("lockedOptionLabel")
 
         effects = QVBoxLayout()
         effects.setSpacing(8)
@@ -403,11 +433,10 @@ class MainWindow(QMainWindow):
         effects.addWidget(self.strain_graph_check)
         effects.addWidget(self.results_screen_check)
         effects.addWidget(self.hold_combo_colour_check)
-        effects.addWidget(self.gpu_compositing_check)
+        effects.addWidget(fast_renderer_label)
 
-        layout.addRow("Resolution", self.resolution_combo)
+        layout.addRow("Resolution", self.resolution_label)
         layout.addRow("Scroll speed", self.scroll_speed_spin)
-        layout.addRow("Motion blur", self.motion_blur_spin)
         layout.addRow("Vignette", self.vignette_spin)
         layout.addRow("Results background", self.results_opacity_spin)
         layout.addRow("Results duration", self.results_duration_spin)
@@ -441,7 +470,13 @@ class MainWindow(QMainWindow):
         self.stop_button.clicked.connect(self.cancel_render)
 
         self.update_button = QPushButton("Check for updates")
+        self.update_button.setObjectName("secondaryButton")
         self.update_button.clicked.connect(self.check_updates)
+
+        self.renders_folder_button = QPushButton("Take me to renders folder")
+        self.renders_folder_button.setObjectName("secondaryButton")
+        self.renders_folder_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
+        self.renders_folder_button.clicked.connect(self.open_renders_folder)
 
         layout.addWidget(self.progress)
         layout.addWidget(self.progress_label)
@@ -450,74 +485,171 @@ class MainWindow(QMainWindow):
         commands.addWidget(self.render_button, 3)
         commands.addWidget(self.stop_button, 2)
         layout.addLayout(commands)
+        layout.addWidget(self.renders_folder_button)
         layout.addWidget(self.update_button)
         return group
 
     def _apply_style(self):
         self.setStyleSheet("""
-            QMainWindow, QWidget {
-                background: #171819;
-                color: #e7e7e7;
+            QMainWindow {
+                background: #0c1017;
+            }
+            QWidget#appRoot {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #101722, stop:0.48 #0e121a, stop:1 #15111d);
+                color: #edf3f8;
+            }
+            QWidget {
+                color: #edf3f8;
                 font-family: Inter, Noto Sans, sans-serif;
                 font-size: 13px;
             }
             QLabel, QCheckBox { background: transparent; }
-            QLabel#pageTitle { font-size: 22px; font-weight: 700; color: #ffffff; }
-            QLabel#pageSubtitle { color: #9fa3a7; margin-bottom: 4px; }
-            QLabel#pathLabel { color: #b8bcc0; padding: 2px 0; }
-            QLabel#fieldLabel, QLabel#progressLabel { color: #b8bcc0; }
-            QLabel#lookupStatus { color: #aeb4ba; font-size: 12px; }
+            QLabel#pageTitle { font-size: 28px; font-weight: 900; color: #ffffff; letter-spacing: 0.3px; }
+            QLabel#pageSubtitle { color: #9fb0bf; margin-bottom: 6px; }
+            QLabel#pathLabel { color: #a9b4bf; padding: 2px 0; }
+            QLabel#fieldLabel, QLabel#progressLabel { color: #b8c4cf; }
+            QLabel#lookupStatus { color: #aeb8c2; font-size: 12px; }
             QLabel#layoutStatus { color: #aeb4ba; font-weight: 600; }
+            QLabel#lockedOptionLabel {
+                color: #d8e5ee;
+                background: rgba(35, 44, 58, 0.82);
+                border: 1px solid #35445a;
+                border-radius: 11px;
+                min-height: 34px;
+                padding: 0 12px;
+            }
             QLabel#infoLabel {
-                color: #80d8e8;
-                background: #202326;
-                border: 1px solid #34383c;
-                border-radius: 6px;
+                color: #92f0ff;
+                background: rgba(25, 34, 45, 0.82);
+                border: 1px solid rgba(96, 199, 213, 0.25);
+                border-radius: 11px;
                 padding: 10px;
             }
             QGroupBox {
-                background: #1d1f21;
-                border: 1px solid #34373a;
-                border-radius: 7px;
+                background: rgba(18, 24, 34, 0.88);
+                border: 1px solid rgba(120, 151, 184, 0.18);
+                border-radius: 16px;
                 margin-top: 10px;
-                font-weight: 600;
+                font-weight: 700;
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 5px;
+                left: 14px;
+                padding: 0 7px;
                 color: #f1f1f1;
             }
-            QPushButton, QComboBox, QSpinBox, QDoubleSpinBox {
-                min-height: 34px;
-                background: #292c2f;
-                border: 1px solid #41454a;
-                border-radius: 6px;
-                padding: 0 10px;
+            QPushButton, QComboBox, QDoubleSpinBox {
+                min-height: 36px;
+                background: rgba(35, 43, 56, 0.96);
+                border: 1px solid #35445a;
+                border-radius: 11px;
+                padding: 0 12px;
             }
-            QPushButton:hover, QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover {
-                border-color: #64c7d5;
-                background: #303438;
+            QComboBox {
+                padding-right: 34px;
             }
-            QPushButton:disabled { color: #74787c; background: #242628; }
+            QPushButton:hover, QComboBox:hover, QDoubleSpinBox:hover {
+                border-color: #70d8e7;
+                background: rgba(47, 59, 74, 0.98);
+            }
+            QPushButton:disabled { color: #747f89; background: rgba(32, 36, 43, 0.85); }
             QPushButton#primaryButton {
-                background: #2e9b68;
-                border-color: #38b879;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #2aa66f, stop:1 #42c592);
+                border-color: #5bdeb0;
                 color: #ffffff;
-                font-weight: 700;
-                min-height: 40px;
+                font-weight: 800;
+                min-height: 42px;
             }
-            QPushButton#primaryButton:hover { background: #35aa73; }
+            QPushButton#primaryButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #31b97d, stop:1 #4cd4a1);
+            }
+            QPushButton#renderButtonBusy {
+                background: rgba(62, 68, 78, 0.96);
+                border-color: #7a8390;
+                color: #d5dce4;
+                font-weight: 800;
+                min-height: 42px;
+            }
+            QPushButton#renderButtonBusy:disabled {
+                background: rgba(62, 68, 78, 0.96);
+                border-color: #7a8390;
+                color: #d5dce4;
+            }
             QPushButton#stopButton {
-                background: #3a2528;
-                border-color: #704047;
+                background: rgba(68, 35, 42, 0.92);
+                border-color: #8c4b56;
                 color: #f4dfe2;
-                font-weight: 700;
-                min-height: 40px;
+                font-weight: 800;
+                min-height: 42px;
             }
-            QPushButton#stopButton:hover { background: #4a2c31; border-color: #a35560; }
+            QPushButton#stopButton:hover { background: #57313a; border-color: #b76470; }
             QPushButton#stopButton:disabled { background: #242628; border-color: #34373a; color: #6f7478; }
-            QComboBox::drop-down { border: 0; width: 28px; }
+            QPushButton#stopButtonActive {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #d93d4b, stop:1 #ff6a4a);
+                border-color: #ff8d7b;
+                color: #ffffff;
+                font-weight: 900;
+                min-height: 42px;
+            }
+            QPushButton#stopButtonActive:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #ee4c5a, stop:1 #ff7658);
+                border-color: #ffb0a3;
+            }
+            QPushButton#stopButtonActive:disabled {
+                background: #463037;
+                border-color: #65424a;
+                color: #9f7d83;
+            }
+            QPushButton#secondaryButton {
+                background: rgba(37, 44, 57, 0.92);
+                border-color: #38475c;
+                color: #d7e1ea;
+                font-weight: 700;
+            }
+            QPushButton#secondaryButton:hover {
+                background: rgba(49, 59, 75, 0.98);
+                border-color: #70d8e7;
+                color: #ffffff;
+            }
+            QPushButton#supportButton {
+                min-width: 42px;
+                max-width: 42px;
+                min-height: 42px;
+                max-height: 42px;
+                border-radius: 21px;
+                background: qradialgradient(cx:0.35, cy:0.25, radius:0.8,
+                    fx:0.35, fy:0.25, stop:0 #ff8db1, stop:1 #b9386d);
+                border: 1px solid rgba(255, 173, 205, 0.75);
+                color: white;
+                font-size: 20px;
+                font-weight: 900;
+                padding: 0;
+            }
+            QPushButton#supportButton:hover {
+                background: qradialgradient(cx:0.35, cy:0.25, radius:0.8,
+                    fx:0.35, fy:0.25, stop:0 #ffc0d4, stop:1 #df4f8a);
+                border-color: #ffd1e0;
+            }
+            QComboBox::drop-down { border: 0; width: 32px; }
+            QComboBox::down-arrow { image: none; width: 0; height: 0; }
+            QToolButton#comboArrowButton {
+                border: 0;
+                background: transparent;
+                color: #9eeaf3;
+                font-size: 15px;
+                font-weight: 800;
+                padding: 0;
+            }
+            QToolButton#comboArrowButton:hover {
+                color: #ffffff;
+                background: rgba(89, 189, 204, 0.15);
+                border-radius: 7px;
+            }
             QCheckBox { spacing: 8px; min-height: 22px; }
             QCheckBox::indicator {
                 width: 16px; height: 16px;
@@ -527,49 +659,40 @@ class MainWindow(QMainWindow):
             }
             QCheckBox::indicator:checked { background: #59bdcc; border-color: #76d7e4; }
             QProgressBar {
-                min-height: 10px;
-                max-height: 10px;
+                min-height: 12px;
+                max-height: 12px;
                 border: 0;
-                border-radius: 5px;
-                background: #303337;
+                border-radius: 6px;
+                background: rgba(55, 65, 78, 0.9);
                 text-align: center;
             }
-            QProgressBar::chunk { border-radius: 5px; background: #59bdcc; }
-            QTabWidget::pane {
-                border: 0;
-                background: transparent;
-                top: -1px;
-            }
-            QTabBar { qproperty-drawBase: 0; }
-            QTabBar::tab {
-                min-width: 112px;
-                min-height: 34px;
-                padding: 0 14px;
-                color: #9fa5aa;
-                background: transparent;
-                border-bottom: 2px solid transparent;
-                font-weight: 600;
-            }
-            QTabBar::tab:hover { color: #e8ecef; background: #202326; }
-            QTabBar::tab:selected { color: #ffffff; border-bottom-color: #59bdcc; }
-            QGraphicsView#layoutPreview {
-                border: 1px solid #34383c;
-                border-radius: 7px;
-                background: #050607;
+            QProgressBar::chunk {
+                border-radius: 6px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #61d6e8, stop:1 #6ef0b2);
             }
         """)
 
     def load_saved_skins(self):
-        if not self.osu_folder:
-            return
-
-        skins = list_skins(self.osu_folder)
+        bundled_entries = bundled_skin_entries()
+        verified_labels = [entry["label"] for entry in bundled_entries]
+        bundled_source_names = {entry["source_name"] for entry in bundled_entries}
+        bundled_folders = {entry["folder"] for entry in bundled_entries}
+        local_skins = list_skins(self.osu_folder) if self.osu_folder else []
+        local_skins = [
+            skin
+            for skin in local_skins
+            if skin not in bundled_source_names and skin not in bundled_folders
+        ]
+        skins = [*verified_labels, *local_skins]
+        self.all_skin_names = skins
         self.skin_combo.blockSignals(True)
         self.skin_combo.clear()
 
         if skins:
             self.skin_combo.addItems(skins)
-            index = self.skin_combo.findText(self.settings.get("last_skin", ""))
+            preferred = self._preferred_skin_name(skins)
+            index = self.skin_combo.findText(preferred)
 
             if index >= 0:
                 self.skin_combo.setCurrentIndex(index)
@@ -578,6 +701,93 @@ class MainWindow(QMainWindow):
 
         self.skin_combo.blockSignals(False)
         self._skin_selection_changed(self.skin_combo.currentText())
+
+    def _preferred_skin_name(self, skins):
+        key_count = None
+        if self.beatmap_file:
+            try:
+                key_count = parse_osu(self.beatmap_file).keys
+            except Exception:
+                key_count = None
+
+        preferred = None
+        if key_count == 7:
+            preferred = self.settings.get("default_skin_7k", "")
+        elif key_count == 4:
+            preferred = self.settings.get("default_skin_4k", "")
+
+        for candidate in (preferred, self.settings.get("last_skin", "")):
+            if candidate and candidate in skins:
+                return candidate
+
+        if key_count == 4:
+            preferred_verified = matching_bundled_skin("nico69 v4")
+            if preferred_verified in skins:
+                return preferred_verified
+            for skin in skins:
+                if "nico69" in skin.lower() and "v4" in skin.lower():
+                    return skin
+        if key_count == 7:
+            preferred_verified = matching_bundled_skin("cawolo new max")
+            if preferred_verified in skins:
+                return preferred_verified
+            for skin in skins:
+                lower = skin.lower()
+                if "cawolo" in lower and "new" in lower and "max" in lower:
+                    return skin
+
+        return skins[0] if skins else ""
+
+    def _filter_skins_from_search(self):
+        query_text = self.skin_combo.currentText().strip()
+        best = self._best_skin_name(query_text)
+
+        if not best:
+            return
+
+        index = self.skin_combo.findText(best)
+
+        if index >= 0:
+            self.skin_combo.blockSignals(True)
+            self.skin_combo.setCurrentIndex(index)
+            if self.skin_combo.isEditable():
+                self.skin_combo.lineEdit().setText(best)
+            self.skin_combo.blockSignals(False)
+            self._skin_selection_changed(best)
+            self.skin_combo.showPopup()
+
+    def _best_skin_name(self, query_text):
+        query = str(query_text or "").strip().lower()
+        if not self.all_skin_names or query in {"", "no skin found", "no matching skin"}:
+            return None
+
+        bundled_match = matching_bundled_skin(query)
+        if bundled_match in self.all_skin_names:
+            return bundled_match
+
+        def score_skin(name):
+            lower = name.lower()
+            if lower == query:
+                return (0, len(name), name)
+            if lower.startswith(query):
+                return (1, len(name), name)
+            if query in lower:
+                return (2, len(name), name)
+
+            tokens = [token for token in query.replace("_", " ").replace("-", " ").split() if token]
+            if tokens and all(token in lower for token in tokens):
+                return (3, len(name), name)
+
+            return None
+
+        ranked = [(score_skin(skin), skin) for skin in self.all_skin_names]
+        ranked = [(score, skin) for score, skin in ranked if score is not None]
+
+        if not ranked:
+            return None
+
+        ranked.sort(key=lambda item: item[0])
+        return ranked[0][1]
 
     def _start_osu_discovery(self):
         if self.discovery_thread and self.discovery_thread.isRunning():
@@ -604,6 +814,75 @@ class MainWindow(QMainWindow):
             update_setting("osu_folder", self.osu_folder)
 
         self.load_saved_skins()
+        self.refresh_recent_replays()
+
+    def refresh_recent_replays(self, query=""):
+        if not getattr(self, "replay_combo", None):
+            return
+
+        query = query.strip()
+        self.replay_combo.blockSignals(True)
+        self.replay_combo.clear()
+        self.replay_combo_paths = []
+        selected_index = -1
+
+        if not self.osu_folder:
+            self.replay_combo.addItem("No osu! folder selected")
+        else:
+            replays = list_recent_replays(self.osu_folder, limit=250, query=query)
+
+            if replays:
+                self.replay_combo.addItem("Recent replays...")
+                self.replay_combo_paths.append("")
+
+                for replay in replays:
+                    self.replay_combo.addItem(replay["name"])
+                    self.replay_combo_paths.append(replay["path"])
+                    if self.replay_file and Path(replay["path"]) == Path(self.replay_file):
+                        selected_index = self.replay_combo.count() - 1
+            else:
+                self.replay_combo.addItem("No replay found")
+
+        if selected_index >= 0:
+            self.replay_combo.setCurrentIndex(selected_index)
+        elif query and self.replay_combo.isEditable():
+            self.replay_combo.setCurrentIndex(-1)
+            self.replay_combo.lineEdit().setText(query)
+
+        self.replay_combo.blockSignals(False)
+
+    def _replay_search_edited(self):
+        self.replay_search_dirty = True
+
+    def _refresh_replays_from_search(self):
+        if not self.replay_search_dirty:
+            return
+
+        text = self.replay_combo.currentText()
+
+        if text in {"Recent replays...", "No replay found", "No osu! folder selected"}:
+            self.replay_search_dirty = False
+            return
+
+        self.refresh_recent_replays(text)
+        self.replay_search_dirty = False
+        self.replay_combo.showPopup()
+
+    def _recent_replay_selected(self, index):
+        if index < 0 or index >= len(self.replay_combo_paths):
+            return
+
+        replay = self.replay_combo_paths[index]
+
+        if not replay:
+            return
+
+        self.replay_search_dirty = False
+        self.replay_file = replay
+        self.settings["last_replay"] = replay
+        update_setting("last_replay", replay)
+        self.replay_label.setText(replay)
+        self._start_beatmap_lookup()
 
     def _native_dialog_directory(self, path):
         directory = Path(path).expanduser()
@@ -818,6 +1097,7 @@ class MainWindow(QMainWindow):
             update_setting("last_beatmap", found)
             self.beatmap_label.setText(found)
             self.render_button.setEnabled(True)
+            self.load_saved_skins()
             self._skin_selection_changed(self.skin_combo.currentText())
         else:
             self.beatmap_file = None
@@ -855,6 +1135,7 @@ class MainWindow(QMainWindow):
         update_setting("last_beatmap", file)
         self.beatmap_label.setText(file)
         self.render_button.setEnabled(bool(self.replay_file))
+        self.load_saved_skins()
         self._skin_selection_changed(self.skin_combo.currentText())
 
         if self.beatmap_thread and self.beatmap_thread.isRunning():
@@ -886,8 +1167,8 @@ class MainWindow(QMainWindow):
     def _render_options(self):
         return {
             "scroll_speed_value": self.scroll_speed_spin.value(),
-            "resolution": self.resolution_combo.currentText(),
-            "motion_blur": self.motion_blur_spin.value(),
+            "resolution": self.locked_resolution,
+            "motion_blur": 0,
             "show_side_overlay": self.side_overlay_check.isChecked(),
             "show_strain_graph": self.strain_graph_check.isChecked(),
             "vignette_strength": self.vignette_spin.value(),
@@ -895,23 +1176,78 @@ class MainWindow(QMainWindow):
             "results_duration": self.results_duration_spin.value(),
             "show_results_screen": self.results_screen_check.isChecked(),
             "colour_combo_during_holds": self.hold_combo_colour_check.isChecked(),
-            "gpu_compositing": self.gpu_compositing_check.isChecked(),
-            "layout_positions": self.layout_editor.positions(),
+            "gpu_compositing": True,
+            "require_fast_gpu": True,
+            "layout_positions": {},
         }
 
     def _save_render_settings(self, options):
         update_setting("scroll_speed", str(options["scroll_speed_value"]))
         update_setting("resolution", options["resolution"])
-        update_setting("motion_blur", str(options["motion_blur"]))
         update_setting("show_side_overlay", options["show_side_overlay"])
         update_setting("show_strain_graph", options["show_strain_graph"])
-        update_setting("vignette_strength", str(options["vignette_strength"]))
+        update_setting("vignette_strength", str(int(options["vignette_strength"])))
         update_setting("results_background_opacity", str(int(options["results_background_opacity"] * 100)))
         update_setting("results_duration", str(options["results_duration"]))
         update_setting("show_results_screen", options["show_results_screen"])
         update_setting("colour_combo_during_holds", options["colour_combo_during_holds"])
-        update_setting("gpu_compositing", options["gpu_compositing"])
-        update_setting("layout_positions", options["layout_positions"])
+        update_setting("gpu_compositing", True)
+
+    def _refresh_button_style(self, *buttons):
+        for button in buttons:
+            button.style().unpolish(button)
+            button.style().polish(button)
+            button.update()
+
+    def _set_rendering_controls(self, rendering):
+        if rendering:
+            self.render_button.setObjectName("renderButtonBusy")
+            self.render_button.setText("Render video")
+            self.render_button.setEnabled(False)
+            self.stop_button.setObjectName("stopButtonActive")
+            self.stop_button.setEnabled(True)
+        else:
+            self.render_button.setObjectName("primaryButton")
+            self.render_button.setText("Render video")
+            self.render_button.setEnabled(bool(self.replay_file and self.beatmap_file))
+            self.stop_button.setObjectName("stopButton")
+            self.stop_button.setEnabled(False)
+
+        self._refresh_button_style(self.render_button, self.stop_button)
+
+    def _renders_folder(self):
+        folder = self.settings.get("last_output_folder") or str(Path.home() / "Videos")
+        path = Path(folder).expanduser()
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def open_renders_folder(self):
+        path = self._renders_folder()
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+    def show_support_popup(self, manual=False):
+        if not manual and setting_bool(self.settings.get("hide_support_popup", False)):
+            return
+
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Information)
+        box.setWindowTitle("Support the project")
+        box.setText("Support osu!mania Fast Renderer")
+        box.setInformativeText(SUPPORT_MESSAGE)
+        support_button = box.addButton("Support on Ko-fi", QMessageBox.AcceptRole)
+        box.addButton("Not now", QMessageBox.RejectRole)
+
+        checkbox = QCheckBox("Do not show again")
+        checkbox.setChecked(False)
+        box.setCheckBox(checkbox)
+        box.exec()
+
+        if checkbox.isChecked():
+            self.settings["hide_support_popup"] = True
+            update_setting("hide_support_popup", True)
+
+        if box.clickedButton() is support_button:
+            QDesktopServices.openUrl(QUrl(SUPPORT_URL))
 
     def start_render(self):
         if not self.beatmap_file or not self.replay_file:
@@ -931,13 +1267,30 @@ class MainWindow(QMainWindow):
         if not output_file.lower().endswith(".mp4"):
             output_file += ".mp4"
 
-        update_setting("last_output_folder", str(Path(output_file).parent))
-        selected_skin = self.skin_combo.currentText()
-        self.skin_folder = (
+        output_folder = str(Path(output_file).parent)
+        self.settings["last_output_folder"] = output_folder
+        update_setting("last_output_folder", output_folder)
+        selected_skin = self._best_skin_name(self.skin_combo.currentText()) or self.skin_combo.currentText().strip()
+        if selected_skin and selected_skin != self.skin_combo.currentText():
+            index = self.skin_combo.findText(selected_skin)
+            if index >= 0:
+                self.skin_combo.setCurrentIndex(index)
+
+        bundled_path = bundled_skin_path(selected_skin)
+        self.skin_folder = bundled_path or (
             str(Path(self.osu_folder) / "Skins" / selected_skin)
-            if self.osu_folder and selected_skin != "No skin found"
+            if self.osu_folder and selected_skin and selected_skin != "No skin found"
             else None
         )
+
+        if self.skin_folder and not Path(self.skin_folder).is_dir():
+            QMessageBox.warning(
+                self,
+                "Skin not found",
+                f"The selected skin folder does not exist:\n{self.skin_folder}\n\n"
+                "Select a skin from the dropdown before rendering.",
+            )
+            return
 
         if selected_skin != "No skin found":
             update_setting("last_skin", selected_skin)
@@ -946,8 +1299,7 @@ class MainWindow(QMainWindow):
         self._save_render_settings(options)
         self.progress.setValue(0)
         self.progress_label.setText("Preparing render...")
-        self.render_button.setEnabled(False)
-        self.stop_button.setEnabled(True)
+        self._set_rendering_controls(True)
 
         self.thread = RenderThread(
             self.beatmap_file,
@@ -969,9 +1321,6 @@ class MainWindow(QMainWindow):
         self.progress_animation.start()
         self.progress_label.setText(text)
 
-        if percent >= 85:
-            self.stop_button.setEnabled(False)
-
     def cancel_render(self):
         if not self.thread or not self.thread.isRunning():
             return
@@ -981,21 +1330,19 @@ class MainWindow(QMainWindow):
         self.progress_label.setText("Stopping render...")
 
     def render_done(self, output_file):
-        self.render_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self._set_rendering_controls(False)
         self.progress.setValue(100)
         self.progress_label.setText("Render complete")
         QMessageBox.information(self, "Render complete", f"Video created:\n{output_file}")
+        self.show_support_popup()
 
     def render_failed(self, error):
-        self.render_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self._set_rendering_controls(False)
         self.progress_label.setText("Render failed")
         QMessageBox.critical(self, "Render error", error)
 
     def render_cancelled(self):
-        self.render_button.setEnabled(True)
-        self.stop_button.setEnabled(False)
+        self._set_rendering_controls(False)
         self.progress_animation.stop()
         self.progress.setValue(0)
         self.progress_label.setText("Render cancelled")

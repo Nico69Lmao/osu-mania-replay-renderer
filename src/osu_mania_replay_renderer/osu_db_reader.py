@@ -1,5 +1,9 @@
 from pathlib import Path
+import mmap
 import struct
+
+_BEATMAP_PATH_CACHE = {}
+_SONGS_FILENAME_INDEX_CACHE = {}
 
 
 class OsuDbReader:
@@ -280,3 +284,109 @@ def read_mania_star_rating_by_hash_scan(data, md5_hash, mods_int):
             pass
 
         start = index + 1
+
+
+def beatmap_filename_by_hash_scan(data, md5_hash):
+    needle = str(md5_hash).lower().encode("ascii")
+    start = 0
+
+    while True:
+        index = data.find(needle, start)
+
+        if index < 0:
+            return None
+
+        reader = OsuDbReader(data)
+        reader.pos = index + len(needle)
+
+        try:
+            filename = reader.string()
+
+            if filename.lower().endswith(".osu"):
+                return filename
+        except Exception:
+            pass
+
+        start = index + 1
+
+
+def beatmap_filename_by_hash_mmap(db_path, md5_hash):
+    needle = str(md5_hash).lower().encode("ascii")
+
+    with open(db_path, "rb") as stream:
+        with mmap.mmap(stream.fileno(), 0, access=mmap.ACCESS_READ) as mapped:
+            start = 0
+
+            while True:
+                index = mapped.find(needle, start)
+
+                if index < 0:
+                    return None
+
+                reader = OsuDbReader(mapped)
+                reader.pos = index + len(needle)
+
+                try:
+                    filename = reader.string()
+
+                    if filename.lower().endswith(".osu"):
+                        return filename
+                except Exception:
+                    pass
+
+                start = index + 1
+
+
+def beatmap_path_by_hash(osu_folder, md5_hash):
+    osu_folder = Path(osu_folder)
+    db_path = osu_folder / "osu!.db"
+
+    if not db_path.exists():
+        return None
+
+    stat = db_path.stat()
+    cache_key = (str(db_path), stat.st_mtime_ns, stat.st_size, str(md5_hash).lower())
+    cached = _BEATMAP_PATH_CACHE.get(cache_key)
+
+    if cached and Path(cached).is_file():
+        return cached
+
+    filename = beatmap_filename_by_hash_mmap(db_path, md5_hash)
+
+    if not filename:
+        return None
+
+    songs_dir = osu_folder / "Songs"
+    direct = songs_dir / filename
+
+    if direct.is_file():
+        result = str(direct)
+        _BEATMAP_PATH_CACHE[cache_key] = result
+        return result
+
+    index_key = str(songs_dir)
+    filename_index = _SONGS_FILENAME_INDEX_CACHE.get(index_key)
+
+    if filename_index is None:
+        filename_index = {}
+
+        if songs_dir.exists():
+            for candidate in songs_dir.rglob("*.osu"):
+                filename_index.setdefault(candidate.name.lower(), []).append(candidate)
+
+        _SONGS_FILENAME_INDEX_CACHE[index_key] = filename_index
+
+    matches = filename_index.get(filename.lower(), [])
+
+    if len(matches) == 1 and matches[0].is_file():
+        result = str(matches[0])
+        _BEATMAP_PATH_CACHE[cache_key] = result
+        return result
+
+    for candidate in matches:
+        if candidate.is_file():
+            result = str(candidate)
+            _BEATMAP_PATH_CACHE[cache_key] = result
+            return result
+
+    return None

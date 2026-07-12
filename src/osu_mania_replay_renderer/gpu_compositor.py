@@ -1,3 +1,5 @@
+import os
+
 import numpy as np
 
 
@@ -33,7 +35,8 @@ class GpuCompositor:
         import moderngl
 
         self.moderngl = moderngl
-        self.context = moderngl.create_standalone_context(backend="egl", require=330)
+        self.context_backend = None
+        self.context = self._create_context(moderngl)
         self.program = self.context.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
         self.vertex_buffer = self.context.buffer(reserve=16 * 4)
         self.vertex_array = self.context.vertex_array(
@@ -47,10 +50,49 @@ class GpuCompositor:
         self.frame_texture = None
         self.output_texture = None
         self.framebuffer = None
+        self.read_buffer = None
+        self.vertex_data = np.empty(16, dtype="f4")
 
     @property
     def renderer_name(self):
-        return self.context.info.get("GL_RENDERER", "OpenGL")
+        renderer = self.context.info.get("GL_RENDERER", "OpenGL")
+        return f"{renderer} ({self.context_backend})" if self.context_backend else renderer
+
+    @staticmethod
+    def _context_attempts():
+        preferred = os.environ.get("MANIA_RENDERER_GL_BACKEND")
+        attempts = []
+
+        if preferred:
+            attempts.append(preferred.strip().lower())
+
+        attempts.extend(["egl", "default", "osmesa"])
+
+        seen = set()
+
+        for backend in attempts:
+            if not backend or backend in seen:
+                continue
+
+            seen.add(backend)
+            yield backend
+
+    def _create_context(self, moderngl):
+        errors = []
+
+        for backend in self._context_attempts():
+            kwargs = {} if backend == "default" else {"backend": backend}
+
+            try:
+                context = moderngl.create_standalone_context(require=330, **kwargs)
+            except Exception as error:
+                errors.append(f"{backend}: {type(error).__name__}: {error}")
+                continue
+
+            self.context_backend = backend
+            return context
+
+        raise RuntimeError("Could not create an OpenGL context. " + " | ".join(errors))
 
     def queue(self, image, x, y, width, height, blend_mode="normal"):
         self.commands.append((
@@ -76,6 +118,7 @@ class GpuCompositor:
         self.output_texture.filter = (self.moderngl.NEAREST, self.moderngl.NEAREST)
         self.framebuffer = self.context.framebuffer(color_attachments=[self.output_texture])
         self.frame_size = (width, height)
+        self.read_buffer = bytearray(width * height * 3)
 
     def _texture_for(self, image):
         cacheable = not image.flags.writeable
@@ -123,11 +166,8 @@ class GpuCompositor:
         x2 = clipped_right / frame_width * 2.0 - 1.0
         y1 = 1.0 - clipped_top / frame_height * 2.0
         y2 = 1.0 - clipped_bottom / frame_height * 2.0
-        vertices = np.array(
-            [x1, y1, u1, v1, x1, y2, u1, v2, x2, y1, u2, v1, x2, y2, u2, v2],
-            dtype="f4",
-        )
-        self.vertex_buffer.write(vertices.tobytes())
+        self.vertex_data[:] = (x1, y1, u1, v1, x1, y2, u1, v2, x2, y1, u2, v1, x2, y2, u2, v2)
+        self.vertex_buffer.write(self.vertex_data)
         texture.use(0)
         self.vertex_array.render(self.moderngl.TRIANGLE_STRIP)
 
@@ -137,7 +177,7 @@ class GpuCompositor:
 
         height, width = frame.shape[:2]
         self._ensure_frame(width, height)
-        self.frame_texture.write(np.ascontiguousarray(frame).tobytes(), alignment=1)
+        self.frame_texture.write(np.ascontiguousarray(frame), alignment=1)
         self.framebuffer.use()
         self.context.viewport = (0, 0, width, height)
         self.context.disable(self.moderngl.BLEND)
@@ -164,8 +204,8 @@ class GpuCompositor:
                 if temporary:
                     texture.release()
 
-        data = self.framebuffer.read(components=3, alignment=1)
-        frame[:] = np.frombuffer(data, dtype=np.uint8).reshape(height, width, 3)[::-1]
+        self.framebuffer.read_into(self.read_buffer, components=3, alignment=1)
+        frame[:] = np.frombuffer(self.read_buffer, dtype=np.uint8).reshape(height, width, 3)[::-1]
         self.commands.clear()
 
     def release(self):
@@ -190,11 +230,20 @@ class GpuCompositor:
         self.context.release()
 
 
+LAST_GPU_ERROR = None
+
+
 def create_gpu_compositor():
+    global LAST_GPU_ERROR
+
     try:
-        return GpuCompositor()
-    except Exception:
+        compositor = GpuCompositor()
+    except Exception as error:
+        LAST_GPU_ERROR = str(error)
         return None
+
+    LAST_GPU_ERROR = None
+    return compositor
 
 
 def detect_gpu_renderer():
@@ -207,3 +256,7 @@ def detect_gpu_renderer():
         return compositor.renderer_name
     finally:
         compositor.release()
+
+
+def gpu_unavailable_reason():
+    return LAST_GPU_ERROR

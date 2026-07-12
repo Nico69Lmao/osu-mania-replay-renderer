@@ -1,0 +1,34 @@
+name: Scheduled release tag
+
+on:
+  schedule:
+    - cron: "0 13 12 7 *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  create-release-tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Create v0.5.0v tag
+        run: |
+          if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%Y-%m-%dT%H:%M)" != "2026-07-12T13:00" ]; then
+            echo "Not the intended one-time release window; skipping."
+            exit 0
+          fi
+
+          tag="v0.5.0v"
+          if git rev-parse "$tag" >/dev/null 2>&1; then
+            echo "$tag already exists; nothing to do."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" -m "Release $tag"
+          git push origin "$tag"

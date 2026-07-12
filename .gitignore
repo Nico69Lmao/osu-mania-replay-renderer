@@ -11,5 +11,7 @@ venv/
 AppDir/
 build/
 dist/
+backups/
+release_artifacts/
 *.AppImage
 *.spec

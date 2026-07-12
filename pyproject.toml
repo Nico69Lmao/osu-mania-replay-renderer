@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "osu-mania-replay-renderer"
-version = "0.4.0"
+version = "0.5.0"
 description = "A local osu!mania replay renderer written in Python"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,7 @@ dependencies = [
     "moderngl>=5.12.0",
     "osrparse",
     "PySide6",
+    "rosu-pp-py>=4.0.2",
 ]
 
 [project.scripts]
@@ -22,6 +23,9 @@ mania-renderer = "osu_mania_replay_renderer.__main__:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/osu_mania_replay_renderer"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"src/osu_mania_replay_renderer/bundled_skins" = "osu_mania_replay_renderer/bundled_skins"
 
 [tool.uv]
 package = true
