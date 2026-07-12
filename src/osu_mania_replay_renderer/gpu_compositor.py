@@ -1,4 +1,5 @@
 import os
+import platform
 
 import numpy as np
 
@@ -26,6 +27,73 @@ void main() {
     colour = texture(source, uv);
 }
 """
+
+
+def _split_backends(value):
+    for part in (value or "").replace(";", ",").split(","):
+        backend = part.strip().lower()
+        if backend:
+            yield backend
+
+
+def opengl_context_attempts():
+    preferred = os.environ.get("MANIA_RENDERER_GL_BACKEND")
+    attempts = []
+    attempts.extend(_split_backends(preferred))
+
+    system = platform.system().lower()
+    if system == "linux":
+        if os.environ.get("DISPLAY"):
+            # Desktop AppImages can fail EGL device enumeration while GLX works
+            # once AppRun points glcontext at the host libGL/libX11. Prefer the
+            # default X11 backend for visible Linux sessions and keep EGL as a
+            # fallback for headless/system builds.
+            attempts.extend(["default", "egl"])
+        else:
+            attempts.extend(["egl", "default"])
+        attempts.append("osmesa")
+    elif system == "windows":
+        attempts.extend(["default", "wgl"])
+    else:
+        attempts.append("default")
+
+    seen = set()
+    for backend in attempts:
+        if not backend or backend in seen:
+            continue
+        seen.add(backend)
+        yield backend
+
+
+def create_standalone_context(moderngl, require=330):
+    errors = []
+
+    for backend in opengl_context_attempts():
+        kwargs = {"require": require}
+        if backend != "default":
+            kwargs["backend"] = backend
+
+        try:
+            context = moderngl.create_standalone_context(**kwargs)
+        except Exception as error:
+            errors.append(f"{backend}: {type(error).__name__}: {error}")
+            continue
+
+        return backend, context
+
+    raise RuntimeError("Could not create an OpenGL context. " + " | ".join(errors))
+
+
+def gpu_smoke_test():
+    import moderngl
+
+    backend, context = create_standalone_context(moderngl, require=330)
+    try:
+        renderer = context.info.get("GL_RENDERER", "OpenGL")
+        version = context.info.get("GL_VERSION", "unknown OpenGL")
+        return f"{renderer} ({version}, backend={backend})"
+    finally:
+        context.release()
 
 
 class GpuCompositor:
@@ -58,41 +126,10 @@ class GpuCompositor:
         renderer = self.context.info.get("GL_RENDERER", "OpenGL")
         return f"{renderer} ({self.context_backend})" if self.context_backend else renderer
 
-    @staticmethod
-    def _context_attempts():
-        preferred = os.environ.get("MANIA_RENDERER_GL_BACKEND")
-        attempts = []
-
-        if preferred:
-            attempts.append(preferred.strip().lower())
-
-        attempts.extend(["egl", "default", "osmesa"])
-
-        seen = set()
-
-        for backend in attempts:
-            if not backend or backend in seen:
-                continue
-
-            seen.add(backend)
-            yield backend
-
     def _create_context(self, moderngl):
-        errors = []
-
-        for backend in self._context_attempts():
-            kwargs = {} if backend == "default" else {"backend": backend}
-
-            try:
-                context = moderngl.create_standalone_context(require=330, **kwargs)
-            except Exception as error:
-                errors.append(f"{backend}: {type(error).__name__}: {error}")
-                continue
-
-            self.context_backend = backend
-            return context
-
-        raise RuntimeError("Could not create an OpenGL context. " + " | ".join(errors))
+        backend, context = create_standalone_context(moderngl, require=330)
+        self.context_backend = backend
+        return context
 
     def queue(self, image, x, y, width, height, blend_mode="normal"):
         self.commands.append((

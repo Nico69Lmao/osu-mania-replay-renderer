@@ -1,3 +1,50 @@
 #!/bin/sh
 HERE="$(dirname "$(readlink -f "$0")")"
+
+pick_first_existing() {
+  for path in "$@"; do
+    if [ -e "$path" ]; then
+      printf '%s\n' "$path"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# PyInstaller bundles Qt/X11 helper libraries inside the AppImage.  They are
+# fine for the GUI, but GLX/EGL context creation is more reliable when glcontext
+# loads the host OpenGL stack directly.  This is especially important on
+# Wayland/XWayland sessions and AMD Mesa systems.
+HOST_LIBGL="$(pick_first_existing \
+  /usr/lib/libGL.so.1 \
+  /usr/lib64/libGL.so.1 \
+  /usr/lib/x86_64-linux-gnu/libGL.so.1 \
+  /lib/x86_64-linux-gnu/libGL.so.1 \
+  /lib64/libGL.so.1)"
+HOST_LIBEGL="$(pick_first_existing \
+  /usr/lib/libEGL.so.1 \
+  /usr/lib64/libEGL.so.1 \
+  /usr/lib/x86_64-linux-gnu/libEGL.so.1 \
+  /lib/x86_64-linux-gnu/libEGL.so.1 \
+  /lib64/libEGL.so.1)"
+HOST_LIBX11="$(pick_first_existing \
+  /usr/lib/libX11.so.6 \
+  /usr/lib64/libX11.so.6 \
+  /usr/lib/x86_64-linux-gnu/libX11.so.6 \
+  /lib/x86_64-linux-gnu/libX11.so.6 \
+  /lib64/libX11.so.6)"
+
+[ -n "$HOST_LIBGL" ] && export GLCONTEXT_LINUX_LIBGL="$HOST_LIBGL"
+[ -n "$HOST_LIBEGL" ] && export GLCONTEXT_LINUX_LIBEGL="$HOST_LIBEGL"
+[ -n "$HOST_LIBX11" ] && export GLCONTEXT_LINUX_LIBX11="$HOST_LIBX11"
+
+if [ -n "$DISPLAY" ]; then
+  export MANIA_RENDERER_GL_BACKEND="${MANIA_RENDERER_GL_BACKEND:-default,egl}"
+  export QT_QPA_PLATFORM="${QT_QPA_PLATFORM:-xcb}"
+else
+  export MANIA_RENDERER_GL_BACKEND="${MANIA_RENDERER_GL_BACKEND:-egl,default}"
+fi
+
+export LIBGL_DRIVERS_PATH="/usr/lib/dri:/usr/lib64/dri:/usr/lib/x86_64-linux-gnu/dri${LIBGL_DRIVERS_PATH:+:$LIBGL_DRIVERS_PATH}"
+
 exec "$HERE/usr/bin/osu-mania-replay-renderer" "$@"

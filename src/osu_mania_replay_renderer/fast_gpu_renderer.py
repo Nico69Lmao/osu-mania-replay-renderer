@@ -862,30 +862,18 @@ def render_fast_gpu(ctx, osu_file, beatmap, output_file, total_frames, audio_sta
         int(os.environ.get("MANIA_RENDERER_FAST_PIPE_BUFFERS", str(default_pipe_buffers))),
     )
 
-    default_gl_backend = "egl" if platform.system().lower() == "linux" else ""
-    gl_backend = os.environ.get("MANIA_RENDERER_GL_BACKEND", default_gl_backend).strip()
-    context_attempts = [{"backend": gl_backend, "require": 330}] if gl_backend else [{"require": 330}]
-    if platform.system().lower() == "windows":
-        context_attempts.extend((
-            {"backend": "wgl", "require": 330},
-            {"backend": "standalone", "require": 330},
-            {"require": 330},
-        ))
+    from osu_mania_replay_renderer.gpu_compositor import create_standalone_context
 
-    ctx_gl = None
-    context_errors = []
-    for attempt in context_attempts:
-        try:
-            ctx_gl = moderngl.create_standalone_context(**attempt)
-            break
-        except Exception as error:
-            context_errors.append(f"{attempt}: {error}")
-
-    if ctx_gl is None:
-        raise RuntimeError("Could not create a fast OpenGL context. " + " | ".join(context_errors))
+    try:
+        gl_backend, ctx_gl = create_standalone_context(moderngl, require=330)
+    except Exception as error:
+        raise RuntimeError(f"Could not create a fast OpenGL context. {error}") from error
 
     if progress_callback:
-        progress_callback(7, f"Fast GPU engine: OpenGL context ready, rendering {total_frames} frames with {encoder}...")
+        progress_callback(
+            7,
+            f"Fast GPU engine: OpenGL context ready ({gl_backend}), rendering {total_frames} frames with {encoder}...",
+        )
     program = ctx_gl.program(vertex_shader=VERTEX_SHADER, fragment_shader=FRAGMENT_SHADER)
     buffer = ctx_gl.buffer(reserve=max(8 * 1024 * 1024, (len(notes) + keys * 4 + 16) * 6 * 5 * 4))
     vao = ctx_gl.vertex_array(program, [(buffer, "2f 3f", "in_position", "in_colour")])

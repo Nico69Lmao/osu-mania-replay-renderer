@@ -482,6 +482,33 @@ class MainWindow(QMainWindow):
             QMainWindow {
                 background: #0c1017;
             }
+            QMessageBox {
+                background-color: #f3f5f8;
+                color: #111827;
+            }
+            QMessageBox QLabel {
+                color: #111827;
+                background: transparent;
+                font-size: 13px;
+            }
+            QMessageBox QCheckBox {
+                color: #111827;
+                background: transparent;
+            }
+            QMessageBox QPushButton {
+                min-width: 88px;
+                min-height: 32px;
+                background: #263244;
+                border: 1px solid #3a4658;
+                border-radius: 9px;
+                color: #ffffff;
+                padding: 0 14px;
+                font-weight: 700;
+            }
+            QMessageBox QPushButton:hover {
+                background: #344155;
+                border-color: #597089;
+            }
             QWidget#appRoot {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #101722, stop:0.48 #0e121a, stop:1 #15111d);

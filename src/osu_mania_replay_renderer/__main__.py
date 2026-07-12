@@ -16,6 +16,12 @@ def main():
         print("multiprocessing smoke test passed")
         return
 
+    if "--gpu-smoke-test" in sys.argv:
+        from osu_mania_replay_renderer.gpu_compositor import gpu_smoke_test
+
+        print(f"gpu smoke test passed: {gpu_smoke_test()}")
+        return
+
     if platform.system().lower() == "linux":
         os.environ.setdefault("QT_QPA_PLATFORMTHEME", "xdgdesktopportal")
 
