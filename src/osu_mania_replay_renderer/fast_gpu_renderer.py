@@ -1534,7 +1534,7 @@ def render_fast_gpu(ctx, osu_file, beatmap, output_file, total_frames, audio_sta
                     bounce += 0.12 * np.sin(np.pi * combo_age / 160.0)
                 if draw_overlays and combo > 0:
                     combo_center_y = int((cfg.get("combo_position") if cfg.get("combo_position") is not None else 111) * skin_scale)
-                    combo_tint = (255, 255, 255)
+                    combo_tint = None
                     if colour_combo_during_holds and active_hold_lanes:
                         hold_colour = cfg.get("colours", {}).get("ColourHold")
                         if hold_colour and len(hold_colour) >= 3:

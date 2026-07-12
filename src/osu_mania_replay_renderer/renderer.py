@@ -1971,7 +1971,7 @@ def frame_worker(frame_id):
             bounce += 0.12 * np.sin(np.pi * combo_age / 160.0)
 
         combo_scale = skin_scale * 0.72 * bounce
-        combo_tint = (255, 255, 255)
+        combo_tint = None
 
         if colour_combo_during_holds and active_ln_hold:
             hold_colour = cfg.get("colours", {}).get("ColourHold")
