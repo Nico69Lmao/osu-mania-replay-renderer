@@ -103,6 +103,10 @@ chmod +x osu-mania-replay-renderer-*-Linux-x86_64.AppImage
 ./osu-mania-replay-renderer-*-Linux-x86_64.AppImage
 ```
 
+## Known issue
+
+- The Linux AppImage build is currently unreliable on some systems. It may fail to create an OpenGL GPU context and fall back to the classic CPU renderer instead of using the GPU. If you need GPU rendering on Linux right now, running from source is recommended until the AppImage packaging issue is fully fixed.
+
 ## Development
 
 Requirements:
