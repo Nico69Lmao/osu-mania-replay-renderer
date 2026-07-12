@@ -15,7 +15,7 @@
 
 </div>
 
-Created by [Nico69_ on osu!](https://osu.ppy.sh/users/18298478), this tool turns local osu!mania replays into skinned MP4 videos. It reads the replay, finds the matching beatmap, loads mania skin elements, renders gameplay with overlays, and muxes the map audio.
+Created by [Nico69_](https://osu.ppy.sh/users/18298478), this tool turns local osu!mania replays into skinned MP4 videos. It reads the replay, finds the matching beatmap, loads mania skin elements, renders gameplay with overlays, and muxes the map audio.
 
 This is a public alpha. It is already usable for real renders, and skin compatibility will keep improving as more skins and replay edge cases are tested.
 
