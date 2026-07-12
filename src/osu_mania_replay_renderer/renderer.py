@@ -2567,7 +2567,7 @@ def render_video(
     fast_gpu_setting = os.environ.get("MANIA_RENDERER_FAST_GPU_ENGINE", "1").strip().lower()
     use_fast_gpu_engine = (
         fast_gpu_setting not in {"0", "false", "no", "off"}
-        and bool(gpu_renderer)
+        and bool(gpu_compositing)
         and int(motion_blur) <= 0
     )
 

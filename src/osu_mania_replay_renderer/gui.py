@@ -5,9 +5,10 @@ import shutil
 import subprocess
 import threading
 
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, QThread, QTimer, Signal, Qt, QUrl
+from PySide6.QtCore import QEvent, QEasingCurve, QPropertyAnimation, QThread, QTimer, Signal, Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -244,6 +245,10 @@ class MainWindow(QMainWindow):
         self.all_skin_names = []
         self.replay_search_dirty = False
 
+        app = QApplication.instance()
+        if platform.system().lower() == "linux" and app is not None:
+            app.installEventFilter(self)
+
         self._build_ui()
         self._apply_style()
         if self.osu_folder and is_osu_folder(self.osu_folder):
@@ -256,6 +261,22 @@ class MainWindow(QMainWindow):
             self._start_beatmap_lookup()
 
         QTimer.singleShot(1200, self.check_updates_on_startup)
+
+    def eventFilter(self, watched, event):
+        if platform.system().lower() == "linux" and event.type() == QEvent.KeyPress:
+            linux_home_keys = {
+                Qt.Key_Home,
+                getattr(Qt, "Key_Meta", None),
+                getattr(Qt, "Key_Super_L", None),
+                getattr(Qt, "Key_Super_R", None),
+            }
+            linux_home_keys.discard(None)
+
+            if event.key() in linux_home_keys:
+                event.accept()
+                return True
+
+        return super().eventFilter(watched, event)
 
     def _build_ui(self):
         root = QWidget()
@@ -968,7 +989,7 @@ class MainWindow(QMainWindow):
         dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir))
         dialog.setFileMode(QFileDialog.Directory)
         dialog.setOption(QFileDialog.ShowDirsOnly, True)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, platform.system().lower() == "linux")
 
         if not dialog.exec():
             return ""
@@ -984,7 +1005,7 @@ class MainWindow(QMainWindow):
 
         dialog = QFileDialog(self, title, self._native_dialog_directory(start_dir), file_filter)
         dialog.setFileMode(QFileDialog.ExistingFile)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, platform.system().lower() == "linux")
 
         if not dialog.exec():
             return ""
@@ -1001,7 +1022,7 @@ class MainWindow(QMainWindow):
         dialog = QFileDialog(self, title, self._native_dialog_directory(Path(start_path).parent), file_filter)
         dialog.selectFile(str(start_path))
         dialog.setAcceptMode(QFileDialog.AcceptSave)
-        dialog.setOption(QFileDialog.DontUseNativeDialog, False)
+        dialog.setOption(QFileDialog.DontUseNativeDialog, platform.system().lower() == "linux")
 
         if not dialog.exec():
             return ""
@@ -1187,7 +1208,7 @@ class MainWindow(QMainWindow):
             "show_results_screen": self.results_screen_check.isChecked(),
             "colour_combo_during_holds": self.hold_combo_colour_check.isChecked(),
             "gpu_compositing": True,
-            "require_fast_gpu": True,
+            "require_fast_gpu": False,
             "layout_positions": {},
         }
 
@@ -1231,9 +1252,61 @@ class MainWindow(QMainWindow):
         path.mkdir(parents=True, exist_ok=True)
         return path
 
+    def _open_path_with_system(self, path):
+        path = str(Path(path).expanduser())
+
+        if platform.system().lower() == "linux":
+            environment = self._host_process_environment()
+            openers = (
+                ("xdg-open", path),
+                ("gio", "open", path),
+                ("kde-open6", path),
+                ("kde-open5", path),
+                ("kde-open", path),
+            )
+
+            for command in openers:
+                executable = shutil.which(command[0])
+
+                if not executable:
+                    continue
+
+                try:
+                    subprocess.Popen(
+                        (executable, *command[1:]),
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        stdin=subprocess.DEVNULL,
+                        env=environment,
+                        start_new_session=True,
+                    )
+                    return True
+                except OSError:
+                    continue
+
+        return QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+
     def open_renders_folder(self):
         path = self._renders_folder()
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+
+        if not self._open_path_with_system(path):
+            QMessageBox.warning(
+                self,
+                "Could not open folder",
+                f"The renders folder is ready, but your desktop did not open it automatically:\n{path}",
+            )
+
+    def _show_error_message(self, title, message, details=""):
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Critical)
+        box.setWindowTitle(title)
+        box.setText(message)
+
+        if details:
+            box.setInformativeText("Open the details section below for the technical error.")
+            box.setDetailedText(str(details))
+
+        box.exec()
 
     def show_support_popup(self, manual=False):
         if not manual and setting_bool(self.settings.get("hide_support_popup", False)):
@@ -1348,7 +1421,11 @@ class MainWindow(QMainWindow):
     def render_failed(self, error):
         self._set_rendering_controls(False)
         self.progress_label.setText("Render failed")
-        QMessageBox.critical(self, "Render error", error)
+        self._show_error_message(
+            "Render error",
+            "The render could not be completed.",
+            error,
+        )
 
     def render_cancelled(self):
         self._set_rendering_controls(False)
