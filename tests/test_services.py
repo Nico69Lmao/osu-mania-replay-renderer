@@ -255,8 +255,8 @@ class RendererControlTests(unittest.TestCase):
         frame = np.full((40, 40, 3), 80, dtype=np.uint8)
         judgement = {"time": 100, "display_time": 100, "value": 300, "lane": 0, "kind": "tap"}
         draw_hit_lighting(frame, skin, [judgement], [100], 150, [10], [20], 20, 1.0, [])
-        self.assertGreater(int(frame[11, 20, 1]), 80)
-        self.assertEqual(int(frame[20, 20, 1]), 80)
+        self.assertEqual(int(frame[11, 20, 1]), 80)
+        self.assertGreater(int(frame[20, 20, 1]), 80)
 
     def test_motion_blur_only_affects_changed_pixels(self):
         previous = np.zeros((24, 24, 3), dtype=np.uint8)
