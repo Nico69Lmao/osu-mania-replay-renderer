@@ -118,11 +118,11 @@ uv run python -m osu_mania_replay_renderer --multiprocessing-smoke-test
 
 Renderer structure:
 
-- `renderer.py` — high-level render orchestration.
-- `fast_gpu_renderer.py` — OpenGL frame generation.
-- `renderer_media.py` — FFmpeg/audio/hardware encoder handling.
-- `skin_loader.py` — dynamic skin parsing.
-- `scoring.py` — replay judgement, combo, accuracy and ScoreV2 logic.
+- `renderer.py` high-level render orchestration.
+- `fast_gpu_renderer.py` OpenGL frame generation.
+- `renderer_media.py` FFmpeg/audio/hardware encoder handling.
+- `skin_loader.py` dynamic skin parsing.
+- `scoring.py` replay judgement, combo, accuracy and ScoreV2 logic.
 
 More details are in [docs/renderer_architecture.md](docs/renderer_architecture.md).
 
