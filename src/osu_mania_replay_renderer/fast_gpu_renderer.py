@@ -230,10 +230,12 @@ def _tinted_image(image, tint_rgb):
         return cached
     tinted = image.copy()
     if tinted.ndim == 3 and tinted.shape[2] >= 3:
-        source = tinted[:, :, :3].astype(np.float32)
-        luminance = np.max(source, axis=2, keepdims=True) / 255.0
         target = np.array((tint_rgb[2], tint_rgb[1], tint_rgb[0]), dtype=np.float32)
-        tinted[:, :, :3] = np.clip(luminance * target, 0, 255).astype(np.uint8)
+        if tinted.shape[2] == 4:
+            visible = tinted[:, :, 3] > 0
+            tinted[:, :, :3][visible] = target.astype(np.uint8)
+        else:
+            tinted[:, :, :3] = target.astype(np.uint8)
     tinted.flags.writeable = False
     TINT_CACHE[key] = tinted
     return tinted
@@ -1169,7 +1171,7 @@ def render_fast_gpu(ctx, osu_file, beatmap, output_file, total_frames, audio_sta
                 active_hold_lanes = []
 
                 for lane, lane_holds in enumerate(ln_hold_lanes):
-                    if lane >= len(pressed) or not pressed[lane] or not lane_holds[0]:
+                    if lane >= len(pressed) or not lane_holds[0]:
                         continue
                     hold_starts, hold_ends = lane_holds
                     hold_i = bisect_right(hold_starts, map_time) - 1

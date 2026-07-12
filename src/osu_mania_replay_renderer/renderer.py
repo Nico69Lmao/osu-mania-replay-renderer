@@ -455,8 +455,12 @@ def draw_skin_text(
             draw_image = image.copy()
 
             if tint is not None and draw_image.ndim == 3 and draw_image.shape[2] >= 3:
-                target = np.array((tint[2], tint[1], tint[0]), dtype=np.float32) / 255.0
-                draw_image[:, :, :3] = np.clip(draw_image[:, :, :3].astype(np.float32) * target, 0, 255).astype(np.uint8)
+                target = np.array((tint[2], tint[1], tint[0]), dtype=np.uint8)
+                if draw_image.shape[2] == 4:
+                    visible = draw_image[:, :, 3] > 0
+                    draw_image[:, :, :3][visible] = target
+                else:
+                    draw_image[:, :, :3] = target
 
             if draw_image.ndim == 3 and draw_image.shape[2] == 4:
                 draw_image[:, :, 3] = np.clip(draw_image[:, :, 3].astype(np.float32) * alpha, 0, 255).astype(np.uint8)
@@ -1775,7 +1779,7 @@ def frame_worker(frame_id):
     active_hold_lanes = []
 
     for lane, lane_holds in enumerate(ln_hold_lanes):
-        if lane >= len(pressed) or not pressed[lane] or not lane_holds[0]:
+        if lane >= len(pressed) or not lane_holds[0]:
             continue
 
         hold_starts, hold_ends = lane_holds
@@ -1967,14 +1971,14 @@ def frame_worker(frame_id):
             bounce += 0.12 * np.sin(np.pi * combo_age / 160.0)
 
         combo_scale = skin_scale * 0.72 * bounce
-        combo_tint = None
-        combo_colours = cfg.get("combo_colours", [])
+        combo_tint = (255, 255, 255)
 
         if colour_combo_during_holds and active_ln_hold:
-            combo_tint = dominant_visible_colour(skin.get("hit_images", {}).get("300"))
-
-            if combo_tint is None and combo_colours:
-                combo_tint = combo_colours[(combo - 1) % len(combo_colours)]
+            hold_colour = cfg.get("colours", {}).get("ColourHold")
+            if hold_colour and len(hold_colour) >= 3:
+                combo_tint = tuple(hold_colour[:3])
+            else:
+                combo_tint = (255, 230, 65)
 
         native_combo_drawn = draw_skin_text(
             frame,
