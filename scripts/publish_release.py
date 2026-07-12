@@ -17,11 +17,12 @@ def run(*args):
 
 
 def main():
-    if len(sys.argv) != 2 or not re.fullmatch(r"\d+\.\d+\.\d+v?", sys.argv[1]):
-        raise SystemExit("Usage: python scripts/publish_release.py X.Y.Z or X.Y.Zv")
+    if len(sys.argv) != 2 or not re.fullmatch(r"v?\d+\.\d+\.\d+", sys.argv[1]):
+        raise SystemExit("Usage: python scripts/publish_release.py X.Y.Z or vX.Y.Z")
 
-    version = sys.argv[1]
-    package_version = version.removesuffix("v")
+    version = sys.argv[1].lstrip("vV")
+    tag = f"v{version}"
+    package_version = version
     status = subprocess.run(
         ["git", "status", "--porcelain"],
         cwd=ROOT,
@@ -41,14 +42,14 @@ def main():
         count=1,
     )
     PYPROJECT.write_text(pyproject, encoding="utf-8")
-    VERSION_FILE.write_text(f'__version__ = "{version}"\n', encoding="utf-8")
+    VERSION_FILE.write_text(f'__version__ = "{package_version}"\n', encoding="utf-8")
 
     run("uv", "lock")
     run("git", "add", "pyproject.toml", "uv.lock", str(VERSION_FILE.relative_to(ROOT)))
-    run("git", "commit", "-m", f"Release v{version}")
-    run("git", "tag", "-a", f"v{version}", "-m", f"Release v{version}")
-    run("git", "push", "origin", "HEAD", f"v{version}")
-    print(f"v{version} pushed. GitHub Actions is building the .exe and AppImage.")
+    run("git", "commit", "-m", f"Release {tag}")
+    run("git", "tag", "-a", tag, "-m", f"Release {tag}")
+    run("git", "push", "origin", "HEAD", tag)
+    print(f"{tag} pushed. GitHub Actions is building the .exe and AppImage.")
 
 
 if __name__ == "__main__":

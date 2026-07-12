@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QSizePolicy,
-    QStyle,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -305,7 +304,7 @@ class MainWindow(QMainWindow):
         if value and value in self.all_skin_names:
             update_setting("last_skin", value)
 
-    def _path_row(self, label, button_text, icon, callback):
+    def _path_row(self, label, button_text, callback):
         row = QVBoxLayout()
         row.setSpacing(6)
         path_label = QLabel(label)
@@ -313,7 +312,6 @@ class MainWindow(QMainWindow):
         path_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
         path_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         button = QPushButton(button_text)
-        button.setIcon(self.style().standardIcon(icon))
         button.clicked.connect(callback)
         row.addWidget(path_label)
         row.addWidget(button)
@@ -328,13 +326,11 @@ class MainWindow(QMainWindow):
         osu_row, self.osu_label = self._path_row(
             self.osu_folder or "No osu! folder selected",
             "Select osu! folder",
-            QStyle.SP_DirOpenIcon,
             self.select_osu_folder,
         )
         replay_row, self.replay_label = self._path_row(
             self.replay_file or "No replay selected",
             "Select replay",
-            QStyle.SP_FileIcon,
             self.select_replay,
         )
         self.replay_combo = SearchableComboBox()
@@ -345,7 +341,6 @@ class MainWindow(QMainWindow):
         beatmap_row, self.beatmap_label = self._path_row(
             self.beatmap_file or "No beatmap selected",
             "Select beatmap manually",
-            QStyle.SP_FileDialogContentsView,
             self.select_manual_beatmap,
         )
 
@@ -388,8 +383,8 @@ class MainWindow(QMainWindow):
         layout.setVerticalSpacing(12)
 
         self.locked_resolution = "1920x1080"
-        self.resolution_label = QLabel(f"{self.locked_resolution}  •  locked for the fast renderer")
-        self.resolution_label.setObjectName("lockedOptionLabel")
+        self.resolution_label = QLabel(self.locked_resolution)
+        self.resolution_label.setObjectName("fixedTextLabel")
 
         self.scroll_speed_spin = QDoubleSpinBox()
         self.scroll_speed_spin.setRange(1.0, 40.0)
@@ -424,16 +419,12 @@ class MainWindow(QMainWindow):
         self.hold_combo_colour_check = QCheckBox("Colour combo during holds")
         self.hold_combo_colour_check.setChecked(setting_bool(self.settings.get("colour_combo_during_holds", True)))
 
-        fast_renderer_label = QLabel("Fast GPU renderer only")
-        fast_renderer_label.setObjectName("lockedOptionLabel")
-
         effects = QVBoxLayout()
         effects.setSpacing(8)
         effects.addWidget(self.side_overlay_check)
         effects.addWidget(self.strain_graph_check)
         effects.addWidget(self.results_screen_check)
         effects.addWidget(self.hold_combo_colour_check)
-        effects.addWidget(fast_renderer_label)
 
         layout.addRow("Resolution", self.resolution_label)
         layout.addRow("Scroll speed", self.scroll_speed_spin)
@@ -460,12 +451,10 @@ class MainWindow(QMainWindow):
 
         self.render_button = QPushButton("Render video")
         self.render_button.setObjectName("primaryButton")
-        self.render_button.setIcon(self.style().standardIcon(QStyle.SP_MediaPlay))
         self.render_button.clicked.connect(self.start_render)
 
         self.stop_button = QPushButton("Stop render")
         self.stop_button.setObjectName("stopButton")
-        self.stop_button.setIcon(self.style().standardIcon(QStyle.SP_MediaStop))
         self.stop_button.setEnabled(False)
         self.stop_button.clicked.connect(self.cancel_render)
 
@@ -475,7 +464,6 @@ class MainWindow(QMainWindow):
 
         self.renders_folder_button = QPushButton("Take me to renders folder")
         self.renders_folder_button.setObjectName("secondaryButton")
-        self.renders_folder_button.setIcon(self.style().standardIcon(QStyle.SP_DirOpenIcon))
         self.renders_folder_button.clicked.connect(self.open_renders_folder)
 
         layout.addWidget(self.progress)
@@ -511,13 +499,10 @@ class MainWindow(QMainWindow):
             QLabel#fieldLabel, QLabel#progressLabel { color: #b8c4cf; }
             QLabel#lookupStatus { color: #aeb8c2; font-size: 12px; }
             QLabel#layoutStatus { color: #aeb4ba; font-weight: 600; }
-            QLabel#lockedOptionLabel {
+            QLabel#fixedTextLabel {
                 color: #d8e5ee;
-                background: rgba(35, 44, 58, 0.82);
-                border: 1px solid #35445a;
-                border-radius: 11px;
                 min-height: 34px;
-                padding: 0 12px;
+                padding: 0;
             }
             QLabel#infoLabel {
                 color: #92f0ff;
@@ -621,19 +606,17 @@ class MainWindow(QMainWindow):
                 max-width: 42px;
                 min-height: 42px;
                 max-height: 42px;
-                border-radius: 21px;
-                background: qradialgradient(cx:0.35, cy:0.25, radius:0.8,
-                    fx:0.35, fy:0.25, stop:0 #ff8db1, stop:1 #b9386d);
-                border: 1px solid rgba(255, 173, 205, 0.75);
-                color: white;
+                border-radius: 10px;
+                background: rgba(58, 66, 78, 0.96);
+                border: 1px solid #6d7684;
+                color: #ffffff;
                 font-size: 20px;
                 font-weight: 900;
                 padding: 0;
             }
             QPushButton#supportButton:hover {
-                background: qradialgradient(cx:0.35, cy:0.25, radius:0.8,
-                    fx:0.35, fy:0.25, stop:0 #ffc0d4, stop:1 #df4f8a);
-                border-color: #ffd1e0;
+                background: rgba(76, 86, 101, 0.98);
+                border-color: #9aa6b5;
             }
             QComboBox::drop-down { border: 0; width: 32px; }
             QComboBox::down-arrow { image: none; width: 0; height: 0; }
@@ -1230,7 +1213,6 @@ class MainWindow(QMainWindow):
             return
 
         box = QMessageBox(self)
-        box.setIcon(QMessageBox.Information)
         box.setWindowTitle("Support the project")
         box.setText("Support osu!mania Fast Renderer")
         box.setInformativeText(SUPPORT_MESSAGE)

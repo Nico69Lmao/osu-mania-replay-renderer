@@ -15,14 +15,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Create v0.5.0v tag
+      - name: Create v0.5.0 tag
         run: |
           if [ "${{ github.event_name }}" = "schedule" ] && [ "$(date -u +%Y-%m-%dT%H:%M)" != "2026-07-12T13:00" ]; then
             echo "Not the intended one-time release window; skipping."
             exit 0
           fi
 
-          tag="v0.5.0v"
+          tag="v0.5.0"
           if git rev-parse "$tag" >/dev/null 2>&1; then
             echo "$tag already exists; nothing to do."
             exit 0

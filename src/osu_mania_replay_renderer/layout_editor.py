@@ -8,7 +8,6 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QStyle,
     QVBoxLayout,
     QWidget,
 )
@@ -372,7 +371,6 @@ class LayoutEditor(QWidget):
         toolbar.addWidget(status)
         toolbar.addStretch()
         reset_button = QPushButton("Reset positions")
-        reset_button.setIcon(self.style().standardIcon(QStyle.SP_BrowserReload))
         reset_button.clicked.connect(self.reset_positions)
         toolbar.addWidget(reset_button)
         layout.addLayout(toolbar)

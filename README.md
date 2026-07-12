@@ -4,7 +4,7 @@
 
 **A GPU-first replay renderer for osu!mania `.osr` files.**
 
-![Version](https://img.shields.io/badge/version-0.5.0v-7bd88f)
+![Version](https://img.shields.io/badge/version-v0.5.0-7bd88f)
 ![Status](https://img.shields.io/badge/status-public%20alpha-ffb347)
 ![Windows](https://img.shields.io/badge/Windows-.exe-3572A5?logo=windows)
 ![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?logo=linux&logoColor=black)
@@ -133,12 +133,12 @@ GitHub Actions builds:
 - Windows `.exe`
 - Linux AppImage
 
-Release `0.5.0v` is scheduled by workflow for July 12, 2026 at 13:00 UTC.
+Release `v0.5.0` is scheduled by workflow for July 12, 2026 at 13:00 UTC.
 
 Manual publish from a clean tree:
 
 ```bash
-python scripts/publish_release.py 0.5.0v
+python scripts/publish_release.py 0.5.0
 ```
 
 ## Support
