@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" role="img" aria-labelledby="title desc">
+  <title id="title">Support heart mascot</title>
+  <desc id="desc">A small pixel-style mascot holding a pink heart.</desc>
+  <rect width="512" height="512" fill="#ffffff"/>
+  <g shape-rendering="crispEdges">
+    <path fill="#0d0d0d" d="M168 40h176v16h32v16h16v16h16v32h16v64h-16v48h-16v32h-16v32h-16v32h-16v32h-32v16h-32v16H168v-16h-32v-16h-32v-32H88v-32H72v-32H56v-48H40v-80h16v-32h16V88h16V72h32V56h48z"/>
+    <path fill="#ffffff" d="M168 72h176v16h32v32h16v64h-16v48h-16v32h-16v32h-32v16h-32v16H184v-16h-32v-16h-32v-32h-16v-32H88v-48H72v-64h16v-32h32V88h48z"/>
+    <path fill="#0d0d0d" d="M128 112h80v16h16v16h16v80h-16v16h-16v16h-80v-16h-16v-16H96v-80h16v-16h16zm176 0h80v16h16v16h16v80h-16v16h-16v16h-80v-16h-16v-16h-16v-80h16v-16h16z"/>
+    <path fill="#ffffff" d="M144 128h32v16h16v32h-16v16h-32v-16h-16v-32h16zm176 0h32v16h16v32h-16v16h-32v-16h-16v-32h16z"/>
+    <path fill="#ffffff" d="M112 208h16v16h-16zm272 0h16v16h-16zM192 144h16v16h-16zm176 0h16v16h-16z"/>
+    <path fill="#0d0d0d" d="M216 224h80v16h-16v16h-48v-16h-16z"/>
+    <path fill="#0d0d0d" d="M128 192h48v16h32v16h16v16h64v-16h16v-16h32v-16h48v16h32v16h16v48h16v96h-16v48h-16v32h-32v16h-48v16H160v-16h-48v-16H80v-32H64v-48H48v-96h16v-48h16v-16h48z"/>
+    <path fill="#ef86aa" d="M128 224h48v16h32v16h16v16h64v-16h16v-16h32v-16h48v16h32v48h16v80h-16v48h-32v32h-48v16H160v-16h-48v-32H80v-48H64v-80h16v-48h48z"/>
+    <path fill="#ffd0df" d="M112 256h64v16h32v16h-96zm176 48h80v16h32v16H288zM96 352h112v16h48v16H96zm208 48h96v16h-96z"/>
+    <path fill="#ffffff" d="M128 320h16v16h-16zm48 16h16v16h-16zm160-80h16v16h-16zm48 32h16v16h-16zm-96 96h16v16h-16z"/>
+    <path fill="#ffffff" d="M96 432h32v16h-16v16H96zm288 0h32v32h-16v-16h-16z"/>
+  </g>
+</svg>

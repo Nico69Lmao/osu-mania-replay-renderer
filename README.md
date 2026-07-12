@@ -2,29 +2,38 @@
 
 # osu!mania Fast Renderer
 
-**A GPU-first replay renderer for osu!mania `.osr` files.**
+**GPU-first replay rendering for osu!mania `.osr` files.**
 
 ![Version](https://img.shields.io/badge/version-v0.5.0-7bd88f)
 ![Status](https://img.shields.io/badge/status-public%20alpha-ffb347)
 ![Windows](https://img.shields.io/badge/Windows-.exe-3572A5?logo=windows)
 ![Linux](https://img.shields.io/badge/Linux-AppImage-FCC624?logo=linux&logoColor=black)
 
-[Download latest release](../../releases/latest) · [Usage](#usage) · [Skin support](#skin-support) · [Development](#development)
+[Download latest release](../../releases/latest) · [Usage](#usage) · [Skin support](#skin-support) · [Support](#support)
 
 ![Nico69 v4 showcase](docs/assets/showcase-nico69-v4.gif)
 
 </div>
 
-osu!mania Fast Renderer turns local osu!mania replays into skinned MP4 videos. It reads the replay, finds the matching beatmap, loads mania skin elements, renders gameplay with overlays, and adds the map audio.
+Created by [Nico69_ on osu!](https://osu.ppy.sh/users/18298478), this tool turns local osu!mania replays into skinned MP4 videos. It reads the replay, finds the matching beatmap, loads mania skin elements, renders gameplay with overlays, and muxes the map audio.
 
-This project is a public alpha. The renderer is usable, but skin compatibility and packaging will keep improving.
+This is a public alpha. It is already usable for real renders, and skin compatibility will keep improving as more skins and replay edge cases are tested.
 
-## Highlights
+## Features
 
 - Fast OpenGL-based frame generation.
-- Hardware video encoding when available: VAAPI on Linux, AMF/NVENC/QSV on Windows when FFmpeg exposes them.
-- 4K and 7K osu!mania rendering support.
-- Dynamic legacy `skin.ini` parsing for receptors, notes, long notes, hit lighting, judgements, stage assets, combo/score fonts, and animations.
+- Hardware video encoding when available:
+  - Linux: VAAPI.
+  - Windows: AMF, NVENC, or QSV when FFmpeg exposes them.
+- 4K and 7K osu!mania rendering.
+- Dynamic legacy `skin.ini` parsing for:
+  - receptors;
+  - notes and long notes;
+  - stage assets;
+  - hit lighting;
+  - judgement images;
+  - combo/score fonts;
+  - animated skin elements.
 - Bundled verified skins:
   - ★ Nico69_ v4 — Verified [4k]
   - ★ Cawolo skin new Max — Verified [7k]
@@ -34,11 +43,11 @@ This project is a public alpha. The renderer is usable, but skin compatibility a
   - ScoreV2
   - DoubleTime / Nightcore
   - Nightcore pitch change
-- DT/NC audio speed-up is applied during render.
+- DT/NC audio speed-up during render.
 - Automatic osu! folder detection on Windows, Linux, Wine, osu-wine, and Lutris setups.
-- Fast replay list cache and beatmap lookup from replay hash.
-- Optional side stats, key/BPM overlay, strain graph, timeline, results screen, and vignette.
-- Update checks on startup.
+- Fast replay cache and beatmap lookup from replay hashes.
+- Optional side statistics, key/BPM overlay, strain graph, timeline, results screen, and vignette.
+- Startup update checks.
 
 ## Usage
 
@@ -46,31 +55,31 @@ This project is a public alpha. The renderer is usable, but skin compatibility a
 2. Select your osu! folder if it is not detected automatically.
 3. Select an `.osr` replay.
 4. Let the app find the beatmap, or select the `.osu` file manually.
-5. Pick a skin. The verified bundled skins are always shown first.
+5. Pick a skin. Verified bundled skins are shown first.
 6. Choose where to save the `.mp4`.
 7. Render.
 
-The app writes a `.debug.json` next to each render. It lists missing skin elements, encoder information, replay matching details, and other useful diagnostics.
+Each render creates a `.debug.json` next to the video. It includes missing skin elements, encoder information, replay matching details, and other diagnostics.
 
 ## Skin support
 
-The renderer targets legacy osu!mania skins and reads the `[Mania]` section from `skin.ini`.
+The renderer targets legacy osu!mania skins and reads the `[Mania]` sections from `skin.ini`.
 
 Currently handled:
 
 - `Keys`, `ColumnStart`, `HitPosition`, column widths, spacing, line widths, and lane colours;
 - `KeyImage#`, `KeyImage#D`, `NoteImage#`, `NoteImage#H`, `NoteImage#L`, `NoteImage#T`;
-- long-note body styles and very short LN edge cases;
-- animated skin elements where the skin provides numbered frames;
+- long-note body, cap, tail, release, and very short LN edge cases;
+- animated elements using numbered skin frames;
 - `Hit0`, `Hit50`, `Hit100`, `Hit200`, `Hit300`, `Hit300g`;
-- stage sides, stage bottom, stage light, hit lighting, judgement line and stage hint;
+- stage left/right/bottom, stage hints, stage lights, hit lighting, and judgement line;
 - combo/score font digits and ranking assets.
 
-The code has been tested with multiple 4K and 7K skins. Some of the compatibility work and optimization was done with AI-assisted testing and code iteration.
+The code has been tested with multiple 4K and 7K skins. Some compatibility and optimization work was done through AI-assisted testing and code iteration.
 
 ## Accuracy and combo
 
-The renderer reconstructs osu!mania judgements from the replay input stream, then reconciles the final counters with the values stored inside the `.osr`.
+The renderer reconstructs osu!mania judgements from replay inputs, then reconciles final counters with the values stored inside the `.osr`.
 
 Handled cases include:
 
@@ -122,7 +131,7 @@ Renderer structure:
 - `fast_gpu_renderer.py` OpenGL frame generation.
 - `renderer_media.py` FFmpeg/audio/hardware encoder handling.
 - `skin_loader.py` dynamic skin parsing.
-- `scoring.py` replay judgement, combo, accuracy and ScoreV2 logic.
+- `scoring.py` replay judgement, combo, accuracy, and ScoreV2 logic.
 
 More details are in [docs/renderer_architecture.md](docs/renderer_architecture.md).
 
@@ -135,6 +144,12 @@ GitHub Actions builds:
 
 ## Support
 
+<div align="center">
+
+<img src="docs/assets/support-heart.svg" alt="Support mascot holding a heart" width="170">
+
+</div>
+
 If this renderer helps you make osu!mania videos, you can support development on [Ko-fi](https://ko-fi.com/nico69yaza).
 
-This tool is made by one person after many hours of testing and coding. A small donation really helps the project grow and helps me keep going.
+This tool is made by one person after many hours of testing, debugging, and coding. A small donation really helps the project grow and helps me keep building it.
